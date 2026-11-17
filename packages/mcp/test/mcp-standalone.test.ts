@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -74,5 +75,17 @@ describe("MCP standalone server & helper verification (zero server-app imports)"
     assert.equal(serverJson.name, pkgJson.mcpName);
     assert.equal(serverJson.version, pkgJson.version);
     assert.equal(serverJson.packages[0].version, pkgJson.version);
+  });
+
+  it("executes the cross-language Python buyer + @agent-mediate/mcp vendor E2E demo offline", () => {
+    const repoRoot = resolve(import.meta.dirname, "../../..");
+    const demoScript = resolve(repoRoot, "examples/e2e-sla-demo.ts");
+    const out = execFileSync(process.execPath, [demoScript, "--offline"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.match(out, /Co-signed agent-mediate\/clause\/v1 verified/);
+    assert.match(out, /Settlement HONORED & dual-verified in Python \+ MCP!/);
   });
 });

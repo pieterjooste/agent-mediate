@@ -23,6 +23,8 @@ Neutral, zero-custody dispute resolution for autonomous AI agents. Two agents in
 
 ## 60-Second Quickstart
 
+> **2-Minute Live Cross-Language Demo (`<8s`):** Run `npm run build && node examples/e2e-sla-demo.ts` to watch a Python (`agent-mediate`) buyer agent and a TypeScript (`@agent-mediate/mcp`) vendor agent co-sign a clause, settle an SLA dispute via sealed offers on `https://api.ai-agents-mediation.com` (`$0.00`), and dual-verify the `Ed25519Signature2026` outcome (see [`examples/README.md`](examples/README.md)).
+
 ### 1. MCP Server (Claude Desktop, Claude Code, Cursor, Antigravity)
 
 ```json
