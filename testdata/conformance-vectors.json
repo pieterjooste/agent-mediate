@@ -1,0 +1,383 @@
+{
+  "rules": {
+    "rulesVersion": "1.3.0",
+    "rulesHash": "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4"
+  },
+  "keys": {
+    "seedAHex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "pkcs8V1PemA": "-----BEGIN PRIVATE KEY-----\nMFECAQEwBQYDK2VwBCIEIBERERERERERERERERERERERERERERERERERERERERERgSEA0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc=\n-----END PRIVATE KEY-----\n",
+    "didA": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+    "seedBHex": "2222222222222222222222222222222222222222222222222222222222222222",
+    "didB": "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK",
+    "seedPHex": "3333333333333333333333333333333333333333333333333333333333333333",
+    "didP": "did:key:z6Mkg49NtQR2LyYRDCQFK4w1VVHqhypZSSRo7HsyuN7SV7v5"
+  },
+  "jcs": [
+    {
+      "label": "integerLikeKeys",
+      "input": {
+        "2": 2,
+        "10": 1,
+        "01": 3,
+        "a": 0,
+        "nested": {
+          "9": "nine",
+          "10": "ten"
+        }
+      },
+      "canonical": "{\"01\":3,\"10\":1,\"2\":2,\"a\":0,\"nested\":{\"10\":\"ten\",\"9\":\"nine\"}}",
+      "sha256": "f64ebba6b88bb5fe990503eaee833ee779631ada40fdc05979e246b9617592ba"
+    },
+    {
+      "label": "unicodeOrdering",
+      "input": {
+        "": "bmp_high",
+        "😀": "emoji",
+        "ctrl": "x\n\u0007"
+      },
+      "canonical": "{\"ctrl\":\"x\\n\\u0007\",\"😀\":\"emoji\",\"\":\"bmp_high\"}",
+      "sha256": "f58b4f093adc028cb35b9d8159bfb6701c9ae8702adf3c705f18e6634f7709c7"
+    },
+    {
+      "label": "floatBoundaries",
+      "input": {
+        "maxSafeInt": 9007199254740991,
+        "sci": 1e+21,
+        "small": 0.000001,
+        "tiny": 1e-7,
+        "sum": 0.30000000000000004
+      },
+      "canonical": "{\"maxSafeInt\":9007199254740991,\"sci\":1e+21,\"small\":0.000001,\"sum\":0.30000000000000004,\"tiny\":1e-7}",
+      "sha256": "11bc5eeec24386d50dc6259fe7e3ad5e0b7bb3545079a20e490373452c716ff9"
+    }
+  ],
+  "didWeb": {
+    "valid": [
+      {
+        "didWeb": "did:web:mediate.example",
+        "url": "https://mediate.example/.well-known/did.json"
+      },
+      {
+        "didWeb": "did:web:localhost%3A8787:agents:v1",
+        "url": "https://localhost:8787/agents/v1/did.json"
+      }
+    ],
+    "invalid": [
+      "did:web:Example.COM",
+      "did:web:%45xample.com",
+      "did:web:evil.com%5c@good.com",
+      "did:web:foo..bar",
+      "did:web:example.com:",
+      "did:web:example.com:..:secret",
+      "did:web:bad%25host.com",
+      "did:web:bad%3chost.com"
+    ]
+  },
+  "weakPoints": [
+    {
+      "hex": "0100000000000000000000000000000000000000000000000000000000000000",
+      "reason": "small-order point"
+    },
+    {
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "reason": "small-order point"
+    },
+    {
+      "hex": "0100000000000000000000000000000000000000000000000000000000000080",
+      "reason": "non-canonical encoding"
+    },
+    {
+      "hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "reason": "non-canonical encoding"
+    }
+  ],
+  "proposalOpenings": [
+    {
+      "label": "enterpriseLargeGrid",
+      "opening": {
+        "disputeId": "dsp_conformance_large",
+        "mode": "salted",
+        "proposalKeyOrSalt": "ebd1e546b7a46afa27385018ae12ef318536f0879ce19ba0fa0e9e9d7f430855",
+        "proposalKeyCommitment": "b7f7f4b7da1d71d3e2e5b97c1a64afe926d9664cec5607b540d0ec51f0af9bf6",
+        "issues": [
+          {
+            "id": "settlementUsd",
+            "label": "Settlement",
+            "unit": "USD",
+            "min": 0,
+            "max": 10000000,
+            "step": 5000,
+            "claimantPrefers": "higher",
+            "obligor": "respondent"
+          },
+          {
+            "id": "creditUsd",
+            "label": "Credit",
+            "unit": "USD",
+            "min": 0,
+            "max": 2000000,
+            "step": 1000,
+            "claimantPrefers": "higher",
+            "obligor": "respondent"
+          }
+        ],
+        "expectedIssuesHash": "fb56151039433081efe5e43a28fb49742ae78d01a6cc336069f35ab1178235da",
+        "declared": {
+          "claimant": {
+            "partySalt": "b3f703588b59df48d20c85f06c5c496f9fb6fdb453d520e7d412a954fb6785e3",
+            "commitment": "e939464ec2a19e5185786b8d2a89742beb0b889ffd381ca7729675ab06e47c7a",
+            "private": {
+              "weights": {
+                "settlementUsd": 0.75,
+                "creditUsd": 0.25
+              },
+              "walkaway": {
+                "settlementUsd": 3500000,
+                "creditUsd": 400000
+              },
+              "limits": {
+                "settlementUsd": {
+                  "min": 2000000,
+                  "max": 9000000
+                },
+                "creditUsd": {
+                  "min": 0,
+                  "max": 2000000
+                }
+              }
+            }
+          },
+          "respondent": {
+            "partySalt": "e28fd2ae15a20bdbf6f90e5529cfad56ce11d6611134b9d88a31008379a20c5e",
+            "commitment": "df99c6d19a400dd7b4ad35e583b1b914235f18329f4495b45bc99a698a57da33",
+            "private": {
+              "weights": {
+                "settlementUsd": 0.85,
+                "creditUsd": 0.15
+              },
+              "walkaway": {
+                "settlementUsd": 6500000,
+                "creditUsd": 1200000
+              },
+              "limits": {
+                "settlementUsd": {
+                  "min": 0,
+                  "max": 7500000
+                },
+                "creditUsd": {
+                  "min": 0,
+                  "max": 1800000
+                }
+              }
+            }
+          }
+        }
+      },
+      "expectedProposal": {
+        "views": {
+          "claimant": {
+            "settlementUsd": 4380000,
+            "creditUsd": 1800000
+          },
+          "respondent": {
+            "settlementUsd": 4380000,
+            "creditUsd": 1800000
+          }
+        },
+        "settles": true
+      },
+      "expectedDeterminationReference": {
+        "settlementUsd": 3570000,
+        "creditUsd": 1800000
+      }
+    },
+    {
+      "label": "fineFractionalGrid",
+      "opening": {
+        "disputeId": "dsp_conformance_fine",
+        "mode": "salted",
+        "proposalKeyOrSalt": "29ad94dd77636d9ecc1d4227c81cb5272dbdceefc977cbf1ad8bf651d6451db0",
+        "proposalKeyCommitment": "a2c7693f30405af05b974dc2546b64ef1fd63bb404056c47b602d16ff873b13a",
+        "issues": [
+          {
+            "id": "rate",
+            "label": "Rate",
+            "unit": "ratio",
+            "min": 0,
+            "max": 1,
+            "step": 0.000001,
+            "claimantPrefers": "lower",
+            "obligor": "respondent"
+          },
+          {
+            "id": "rebate",
+            "label": "Rebate",
+            "unit": "ratio",
+            "min": 0,
+            "max": 1,
+            "step": 0.000005,
+            "claimantPrefers": "higher",
+            "obligor": "respondent"
+          }
+        ],
+        "expectedIssuesHash": "5465a0fde8c0be9c082e42ee17739bd45152529a1d66c982077d65976b0f4022",
+        "declared": {
+          "claimant": {
+            "partySalt": "b783beeaf3d3565e0cbbd387da055581e99cb0fc51f9cdef69744ac361ad9001",
+            "commitment": "709fbec6f8f4ea931bd6534e8df9c49af7aad9e09a08e3512ec0829c10a1c9c2",
+            "private": {
+              "weights": {
+                "rate": 0.6,
+                "rebate": 0.4
+              },
+              "walkaway": {
+                "rate": 0.45,
+                "rebate": 0.25
+              },
+              "limits": {
+                "rate": {
+                  "min": 0.1000003,
+                  "max": 0.6999997
+                }
+              }
+            }
+          },
+          "respondent": {
+            "partySalt": "6452566a98ff117c613a77a3c1bb670d12b11a7cb682d90468fbde2f8cad0a9a",
+            "commitment": "efd67c15cdc440bef1c82fa5cdfc14917cfda44a355bfe53ada0b4bc54a681ab",
+            "private": {
+              "weights": {
+                "rate": 0.35,
+                "rebate": 0.65
+              },
+              "walkaway": {
+                "rate": 0.25,
+                "rebate": 0.65
+              },
+              "limits": {
+                "rebate": {
+                  "min": 0.100002,
+                  "max": 0.899998
+                }
+              }
+            }
+          }
+        }
+      },
+      "expectedProposal": {
+        "views": {
+          "claimant": {
+            "rate": 0.100001,
+            "rebate": 0.100005
+          },
+          "respondent": {
+            "rate": 0.100001,
+            "rebate": 0.100005
+          }
+        },
+        "settles": true
+      },
+      "expectedDeterminationReference": {
+        "rate": 0.100001,
+        "rebate": 0.147115
+      }
+    }
+  ],
+  "clause": {
+    "valid": {
+      "type": "agent-mediate/clause/v1",
+      "contractHash": "fce0115e67c0ca78a6ce656511681e8b8ee995659913cea0f26d4e3a67f24275",
+      "platform": {
+        "did": "did:key:z6Mkg49NtQR2LyYRDCQFK4w1VVHqhypZSSRo7HsyuN7SV7v5",
+        "baseUrl": "https://api.mediate.example",
+        "rulesVersion": "1.3.0",
+        "rulesHash": "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4"
+      },
+      "parties": [
+        {
+          "agentId": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "notice": {
+            "webhookUrl": "https://a.example/hook"
+          }
+        },
+        {
+          "agentId": "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK",
+          "notice": {
+            "email": "ops@b.example"
+          }
+        }
+      ],
+      "terms": {
+        "feeMode": "FILER_PAYS",
+        "determinationConsent": true,
+        "issueTemplates": [
+          {
+            "id": "settlementUsd",
+            "label": "Settlement",
+            "unit": "USD",
+            "min": 0,
+            "max": 10000000,
+            "step": 5000,
+            "claimantPrefers": "higher",
+            "obligor": "respondent"
+          }
+        ]
+      },
+      "issuedAt": 1800000000000,
+      "signatures": [
+        {
+          "partyAgentId": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "signerId": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "signature": "nS/0rsG/4d3SwIi7GZEFGNjBhbXXqG2tz1TJcE7MFc0btObALBrKYj0C+3v6ZTtIcG+nURLa1bD+EwWHGb8dDw=="
+        },
+        {
+          "partyAgentId": "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK",
+          "signerId": "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK",
+          "signature": "M7uJxKFsdV8qmtQXN/YRaxmBe1zW5K+KSOB8kPJXqKXKymr9MRzE1kLJVjP2XROj2HwgrQ51cIsxJ5v0L82IAQ=="
+        }
+      ]
+    },
+    "expectedPlatformDid": "did:key:z6Mkg49NtQR2LyYRDCQFK4w1VVHqhypZSSRo7HsyuN7SV7v5",
+    "expectedPlatformBaseUrl": "https://api.mediate.example",
+    "invalidMutations": [
+      {
+        "label": "nullExpiresAt",
+        "patch": {
+          "expiresAt": null
+        }
+      },
+      {
+        "label": "nullRulesHash",
+        "patch": {
+          "rulesHash": null
+        }
+      },
+      {
+        "label": "unknownRootKey",
+        "patch": {
+          "extraField": true
+        }
+      }
+    ]
+  },
+  "requestProof": {
+    "disputeId": "dsp_vec_1",
+    "action": "reject_issues",
+    "baseUrl": "https://api.mediate.example",
+    "agentId": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+    "contentDigest": "sha-256=:nH33tkZhGtAPxGlNv0Odc5qD5GIvqwops+ms4lnm3qY=:",
+    "idempotencyKey": "idem-vec-001",
+    "proofHash": "d9a3448ed37d0ddae3178a51415275e1c9ee211e5c40b4a51464a6857380e4fa",
+    "proof": {
+      "method": "POST",
+      "targetUri": "https://api.mediate.example/v1/disputes/dsp_vec_1/issues/reject",
+      "contentDigest": "sha-256=:nH33tkZhGtAPxGlNv0Odc5qD5GIvqwops+ms4lnm3qY=:",
+      "idempotencyKey": "idem-vec-001",
+      "signatureInput": "sig1=(\"@method\" \"@target-uri\" \"content-digest\" \"idempotency-key\");created=1800000000;keyid=\"did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S\";alg=\"ed25519\";nonce=\"vec-nonce-00000001\"",
+      "signature": "sig1=:8M+isaffMc3rHwoMAqk+XlcLJ7wbvChmdGOQ6zEyNLA307+F169JCBG3dEh3Fg6OisYtgVMCAbuBeDvYw2Y7AQ==:",
+      "created": 1800000000,
+      "nonce": "vec-nonce-00000001",
+      "keyid": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S"
+    }
+  }
+}

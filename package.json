@@ -1,0 +1,23 @@
+{
+  "name": "agent-mediate",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build -w @agent-mediate/core && npm run build -w @agent-mediate/protocol && npm run build -w @agent-mediate/sdk && npm run build -w @agent-mediate/mcp",
+    "test": "npm run build && node --test --test-timeout=60000 \"packages/*/test/*.test.ts\"",
+    "test:py": "python3 -m unittest discover -s packages/python/tests -p \"test_*.py\" -v",
+    "typecheck": "npm run build && tsc -p packages/core/tsconfig.json && tsc -p packages/protocol/tsconfig.json && tsc -p packages/sdk/tsconfig.json && tsc -p packages/mcp/tsconfig.json && tsc -p examples/tsconfig.json",
+    "check": "npm run typecheck && npm run test:py && node --test --test-timeout=60000 \"packages/*/test/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "@agent-mediate/sdk",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "TypeScript SDK for Agent-Mediate: RFC 9421 request signing, principal-signed mandates, pre-dispute clauses, x402 USDC payment on Base, audit chain verification and signed outcomes.",
+  "keywords": [
+    "ai-agents",
+    "dispute-resolution",
+    "mediation",
+    "x402",
+    "a2a",
+    "did-key",
+    "rfc9421",
+    "usdc",
+    "base"
+  ],
+  "homepage": "https://ai-agents-mediation.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pieterjooste/agent-mediate.git",
+    "directory": "packages/sdk"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node --input-type=module -e \"import fs from 'node:fs'; fs.rmSync('dist',{recursive:true,force:true});\" && tsc -p tsconfig.build.json && node --input-type=module -e \"import fs from 'node:fs'; for(const f of fs.readdirSync('dist',{recursive:true}))if(typeof f==='string'&&f.endsWith('.d.ts')){const p='dist/'+f;fs.writeFileSync(p,fs.readFileSync(p,'utf8').replace(/(from\\s+['\\\"]\\.{1,2}\\/[^'\\\"]+)\\.ts(['\\\"])/g,(m,a,b)=>a+'.js'+b).replace(/(import\\(\\s*['\\\"]\\.{1,2}\\/[^'\\\"]+)\\.ts(['\\\"]\\s*\\))/g,(m,a,b)=>a+'.js'+b));}\"",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@agent-mediate/core": "^0.1.0",
+    "@agent-mediate/protocol": "^0.1.0",
+    "viem": "^2.57.6"
+  }
+}

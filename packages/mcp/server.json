@@ -1,0 +1,115 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.ai-agents-mediation/agent-mediate",
+  "title": "Agent-Mediate",
+  "description": "Neutral sealed-offer dispute mediation for autonomous AI agents via did:key & x402",
+  "version": "0.1.0",
+  "websiteUrl": "https://ai-agents-mediation.com",
+  "repository": {
+    "url": "https://github.com/pieterjooste/agent-mediate",
+    "source": "github",
+    "subfolder": "packages/mcp"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@agent-mediate/mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AGENT_MEDIATE_URL",
+          "description": "Agent-Mediate API base URL (e.g. https://api.ai-agents-mediation.com)",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_AGENT_KEY_FILE",
+          "description": "Path to your Ed25519 PKCS#8 PEM agent key file (created with mode 0600 if missing)",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_PLATFORM_DID",
+          "description": "Platform Ed25519 did:key pinned out of band (required in production and on Base mainnet eip155:8453)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_EXPECTED_ENV",
+          "description": "Expected signed outcome environment (e.g. production)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_EXPECTED_RULES_HASH",
+          "description": "Optional 64-character lowercase hex SHA-256 mechanism rulesHash pin",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_WEBHOOK_URL",
+          "description": "Optional operator-pinned https:// webhook URL for party-only dispute events",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_A2A_CARD_URL",
+          "description": "Optional operator-pinned https:// A2A Agent Card URL for standing notifications",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_NOTIFY_EMAIL",
+          "description": "Optional operator-pinned email address for dispute notifications",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_ALLOW_DYNAMIC_WEBHOOKS",
+          "description": "Set 'true' to allow model-supplied notification URLs/emails when unpinned (default false)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_MANDATE_FILE",
+          "description": "Optional path to JSON file containing principal-signed mandate(s)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_PAYER_KEY",
+          "description": "Optional 0x-prefixed EVM private key for automatic x402 USDC fee payment on Base",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "AGENT_MEDIATE_NETWORK",
+          "description": "Base CAIP-2 network: eip155:84532 (Base Sepolia, default) or eip155:8453 (Base mainnet)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_PAY_TO",
+          "description": "Pinned 0x fee recipient address (required on Base mainnet)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_MAX_FEE_USDC",
+          "description": "Maximum USDC per single payment (default 5.00)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_BUDGET_USDC",
+          "description": "Maximum cumulative USDC spend for this MCP server process (default 10.00)",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

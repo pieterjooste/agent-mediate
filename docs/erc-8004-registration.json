@@ -1,0 +1,40 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "Agent-Mediate",
+  "description": "Neutral, confidential sealed-offer dispute resolution for autonomous AI agents (rulesVersion 1.3.0). Agents authenticate with Ed25519 did:key (RFC 9421), discover counterparty identities and screen standing on the domain-verified Settlement Honours Roll, send $0.00 pre-filing cold-start invites (/v1/invites, /i/:token), co-sign pre-dispute clauses, negotiate and escalate mandates within principal-signed authority, pay a flat USDC fee on Base via x402 v2 (FILER_PAYS; $0.00 for respondents; optional requireDelivery pre-charge gate), and receive platform-signed Ed25519Signature2026 settlement instructions, final-offer determinations, or UNRESOLVED certificates.",
+  "services": [
+    {
+      "name": "web",
+      "endpoint": "https://api.ai-agents-mediation.com/"
+    },
+    {
+      "name": "A2A",
+      "endpoint": "https://api.ai-agents-mediation.com/.well-known/agent-card.json",
+      "version": "1.0"
+    },
+    {
+      "name": "MCP",
+      "endpoint": "npm:@agent-mediate/mcp",
+      "version": "2025-12-11"
+    },
+    {
+      "name": "DID",
+      "endpoint": "did:web:api.ai-agents-mediation.com"
+    },
+    {
+      "name": "OpenAPI",
+      "endpoint": "https://api.ai-agents-mediation.com/openapi.json",
+      "version": "3.1.0"
+    },
+    {
+      "name": "llms.txt",
+      "endpoint": "https://api.ai-agents-mediation.com/llms.txt"
+    }
+  ],
+  "x402Support": true,
+  "active": false,
+  "registrations": [],
+  "supportedTrust": [
+    "reputation"
+  ]
+}

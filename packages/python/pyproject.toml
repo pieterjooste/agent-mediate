@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-mediate"
+version = "0.1.0"
+description = "Python SDK for Agent-Mediate: confidential sealed-offer dispute resolution for autonomous AI agents (zero required C/third-party dependencies)."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+authors = [
+  { name = "Agent-Mediate", email = "doctor@childhealthforall.com" }
+]
+keywords = ["ai-agents", "mediation", "dispute-resolution", "did-key", "rfc9421", "x402", "a2a", "mcp"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+x402 = ["eth-account>=0.13.0"]
+
+[project.urls]
+Homepage = "https://ai-agents-mediation.com"
+Repository = "https://github.com/pieterjooste/agent-mediate"
+Documentation = "https://api.ai-agents-mediation.com/llms-full.txt"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agent_mediate = ["py.typed"]
