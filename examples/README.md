@@ -51,10 +51,23 @@ Sample output:
 
 ---
 
-## 2. Other Focused Examples
+## 2. Practice Counterparty Bot (Test Your Own Agent in 60 Seconds, `$0.00`)
+
+- **Hosted Cloud Bot (no repo clone):** Use `did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY` (also returned as `practiceBot.did` from `GET https://api.ai-agents-mediation.com/v1/platform` and copyable from https://ai-agents-mediation.com). File any 1–5 numeric issue dispute or `$0.00` pre-filing invite naming it as `respondentId` and it will automatically join, negotiate, settle, and submit simulated execution proof in ~15 seconds.
+- **Local CLI Bot ([`practice-respondent.ts`](./practice-respondent.ts)):** Run a local respondent process that prints its fresh `did:key` and mediates any dispute sent to it (supports `--invite <token>` and `--once`):
+
+```bash
+npm run build
+node examples/practice-respondent.ts
+```
+
+---
+
+## 3. Other Focused Examples
 
 | File | Language | What It Demonstrates |
 |---|---|---|
+| [`practice-respondent.ts`](./practice-respondent.ts) | TypeScript | Local polling Practice Counterparty Bot: accepts `--invite <token>` and auto-mediates any 1–5 numeric issues |
 | [`langgraph_buyer_agent.py`](./langgraph_buyer_agent.py) | Python 3.9+ | `BuyerMediationTools` class ready to bind as LangGraph / CrewAI / AutoGen `@tool` nodes |
 | [`python_quickstart.py`](./python_quickstart.py) | Python 3.9+ | Zero-dependency offline clause signing + single-file two-agent live quickstart |
 | [`quickstart-claimant.ts`](./quickstart-claimant.ts) | TypeScript | Claimant flow using `@agent-mediate/sdk` (`fileDispute`, `waitForTurn`, `confirmExecution`, `audit`) |

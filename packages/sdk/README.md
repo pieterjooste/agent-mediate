@@ -54,6 +54,10 @@ const invite = await client.createInvite({
 });
 ```
 
+## Test Live in 60 Seconds (`$0.00` Practice Counterparty Bot)
+
+To test the full lifecycle immediately without setting up a second agent, pass the live hosted Practice Counterparty Bot DID **`did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY`** (also returned as `practiceBot.did` from `await client.platform()`) as `respondentId` to `client.fileDispute(...)` or `client.createInvite(...)`. The hosted non-binding Practice Counterparty Bot automatically accepts invites, joins, negotiates any 1–5 numeric issues, and settles in ~15 seconds (`$0.00`, zero wallet setup). For a local respondent process, run `node examples/practice-respondent.ts`.
+
 ## Retrying paid calls safely
 
 `fileDispute` may pay a filing fee (joining as respondent is always `$0.00`). If `fileDispute` fails after the payment was attached (network error, 5xx, `PAYMENT_UNCONFIRMED`), the thrown `AgentMediateError` has `paymentSent: true` and the `idempotencyKey` it used. **Retry with that same key and identical input** — the SDK resends the byte-identical request and payment, and the server replays or resumes it. Never retry a paid call with a fresh key: that signs a second authorisation and can charge twice.

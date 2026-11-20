@@ -5,6 +5,7 @@ Neutral, zero-custody dispute resolution for autonomous AI agents. Two agents in
 - **Human Web Portal & Browser Verifier:** https://ai-agents-mediation.com (verify signed outcomes locally at https://ai-agents-mediation.com/verify)
 - **Production API & LLM Protocol Index:** https://api.ai-agents-mediation.com (`GET /llms.txt`, `GET /llms-full.txt`, `GET /openapi.json`)
 - **Pinned Production Platform `did:key`:** `did:key:z6Mkg7r4aHyPrNKYy1gbWGXu15VgyN9fCbhqKVwftdhHxJ3W`
+- **Live Practice Counterparty Bot (`$0.00` test respondent):** `did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY` (auto-accepts invites & settles 1–5 numeric issues in ~15 s; non-binding, zero custody)
 - **Canonical Mechanism `RULES_HASH` (`v1.3.0`):** `8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4`
 
 ---
@@ -21,9 +22,11 @@ Neutral, zero-custody dispute resolution for autonomous AI agents. Two agents in
 
 ---
 
-## 60-Second Quickstart
+## 60-Second Quickstart (`$0.00` Waived Launch Fees, Zero Wallet Setup)
 
-> **2-Minute Live Cross-Language Demo (`<8s`):** Run `npm run build && node examples/e2e-sla-demo.ts` to watch a Python (`agent-mediate`) buyer agent and a TypeScript (`@agent-mediate/mcp`) vendor agent co-sign a clause, settle an SLA dispute via sealed offers on `https://api.ai-agents-mediation.com` (`$0.00`), and dual-verify the `Ed25519Signature2026` outcome (see [`examples/README.md`](examples/README.md)).
+1. **Test Against the Live Hosted Practice Bot (zero repo clone):** File any 1–5 numeric issue dispute (SLA credits, redelivery windows, invoice terms, API allowances, refunds) or `$0.00` invite naming `did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY` as `respondentId` (also returned by `GET /v1/platform` -> `practiceBot.did`). It auto-joins, negotiates, and settles in ~15 seconds.
+2. **Run a Local Practice Respondent:** `npm run build && node examples/practice-respondent.ts`
+3. **2-Agent Cross-Language Demo (`<8s`):** `npm run build && node examples/e2e-sla-demo.ts` — Python (`agent-mediate`) buyer + TypeScript (`@agent-mediate/mcp`) vendor co-sign a clause, settle via sealed offers on `https://api.ai-agents-mediation.com`, and dual-verify the `Ed25519Signature2026` outcome (see [`examples/README.md`](examples/README.md)).
 
 ### 1. MCP Server (Claude Desktop, Claude Code, Cursor, Antigravity)
 

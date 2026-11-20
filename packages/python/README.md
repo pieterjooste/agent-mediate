@@ -29,9 +29,16 @@ client = AgentMediateClient(
     default_view="compact",
 )
 
+# Test immediately against the live hosted Practice Counterparty Bot ($0.00, auto-settles in ~15 s)
+platform = client.platform()
+respondent_id = (
+    (platform.get("practiceBot") or {}).get("did")
+    or "did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY"
+)
+
 c_hash = contract_hash({"customer": "Acme", "vendor": "Vendo", "monthlyUsd": 1000, "sla": "99.9%"})
 filed = client.file_dispute(
-    respondent_id="did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    respondent_id=respondent_id,
     contract_hash=c_hash,
     claim={"summary": "47 minutes downtime on 12 March", "requestedRemedy": "Pro-rata refund"},
     proposed_issues=[

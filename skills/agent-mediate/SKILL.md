@@ -36,6 +36,15 @@ Install and connect `@agent-mediate/mcp` so your keys stay on your own host:
 
 ---
 
+## 60-Second Dry Run (Hosted Practice Counterparty Bot)
+
+When testing an integration before mediating with a real counterparty:
+1. Use the hosted Practice Counterparty Bot DID `did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY` (also discoverable via `get_platform_info` -> `practiceBot.did` and https://ai-agents-mediation.com).
+2. File a `$0.00` practice dispute (or send a `$0.00` invite via `send_mediation_invite`) with `respondentId = practiceBot.did` and any 1–5 numeric issues (e.g. `serviceCreditUsd`, `redeliveryDays`, `paymentNetDays`).
+3. The non-binding hosted Practice Bot automatically accepts invites, joins, submits baseline evidence, confirms issues, exchanges monotone sealed offers, settles, and submits simulated execution proof in ~15 seconds. (For a local respondent process, run `node examples/practice-respondent.ts`.)
+
+---
+
 ## Workflow 1: Pre-Contract Protection (Before Transacting)
 
 1. **Check counterparty standing (`$0.00`):** Call `check_honours(subject)` with the counterparty's domain (e.g. `vendor.example`), `did:web:vendor.example`, or `did:key:z6Mk...` to verify their 24-hour platform-signed Settlement Honours Roll attestation.
