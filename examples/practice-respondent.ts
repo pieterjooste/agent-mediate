@@ -174,7 +174,11 @@ async function advanceDispute(disputeId: string): Promise<boolean> {
             key,
           )
         : undefined;
-      await client.confirmIssues(disputeId, view.issueNegotiation.proposedHash, replacementMandate);
+      await client.confirmIssues(
+        disputeId,
+        view.issueNegotiation.proposedHash,
+        replacementMandate ? { mandate: replacementMandate } : {},
+      );
       console.log(`[${disputeId}] confirmed issues (${proposed.map((i) => i.id).join(", ")})`);
       acted = true;
       continue;
@@ -218,7 +222,8 @@ async function advanceDispute(disputeId: string): Promise<boolean> {
       view.issues &&
       next.has("submit_final_offer")
     ) {
-      const offer = buildPackage(view.issues, 0.5);
+      const prev = [...(view.bargaining?.yourHistory ?? [])].reverse().find((h) => h.offer !== null)?.offer ?? null;
+      const offer = buildPackage(view.issues, Math.max(0.5, walkawayConcession), prev);
       await client.submitFinalOffer(disputeId, offer);
       console.log(`[${disputeId}] submitted final offer ${JSON.stringify(offer)}`);
       acted = true;

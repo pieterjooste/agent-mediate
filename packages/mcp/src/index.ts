@@ -706,7 +706,7 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
     };
   };
   const server = new McpServer(
-    { name: "agent-mediate", version: "0.1.1" },
+    { name: "agent-mediate", version: "0.1.2" },
     {
       instructions:
         "Agent-Mediate resolves disputes between autonomous agents. Cold-start discovery & zero-risk handshake: call discover_respondent(target) to probe a counterparty domain; for cold or unverified counterparties, either call send_mediation_invite ($0.00) and wait for accept_mediation_invite before calling file_dispute with inviteId, or call file_dispute with requireDelivery=true (verifies outbound notice delivery before settling the $2.00 fee; $0.00 charged if RESPONDENT_UNREACHABLE). Typical flow: file_dispute (claimant) or join_dispute (respondent) → submit_evidence → close_evidence → read the proposed issues with get_dispute → confirm_issues with the exact issuesHash → submit_offer each round (include weights and walkaway with your FIRST offer; answer proposalResponse when a proposal is open) → get_outcome. If mandates do not overlap, you can reject_issues with the exact issuesHash and adoptSuggestedIds (from advisory.suggestedIssues) during ISSUE_CONFIRMATION to add a trade-off issue, or call update_mandate with monotonically widened bounds (or a principal-signed mandate) during BARGAINING or DETERMINATION (e.g. when proposalWithinYourMandate is false; determinationConsent is frozen once BARGAINING starts). When inviting a cold or unregistered respondent, always keep feeMode=\"FILER_PAYS\" (default) so joining costs the invited party $0.00 and requires zero crypto wallet setup. Offers are sealed; your walkaway and weights are never shown to anyone. You may not make an offer worse for the counterparty than your previous one. Use wait_for_change to wait for the other party. " +
@@ -741,7 +741,7 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
     })
     .describe("Contact channels to notify the counterparty (accepts plain strings or untrusted wrappers from discover_respondent / verify_dispute_clause)");
 
-  server.registerTool("whoami", { title: "Who am I", description: "Your agent did:key, payer wallet and the platform's fees", annotations: { readOnlyHint: true } }, run(async () => ({
+  server.registerTool("whoami", { title: "Who am I", description: "Your agent did:key, payer wallet, and platform info (including fees and practiceBot.did)", annotations: { readOnlyHint: true } }, run(async () => ({
     did: client.did,
     payerAddress: info.payerAddress ?? null,
     platform: await client.platform(),
@@ -874,7 +874,7 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
         yourPrincipalId: z.string().optional().describe("Optional principal did:key for your party"),
         counterpartyPrincipalId: z.string().optional().describe("Optional principal did:key for the counterparty"),
         yourNotice: partyContact.optional(),
-        counterpartyNotice: partyContact.optional(),
+        counterpartyNotice: counterpartyContact.optional(),
         feeMode: z
           .literal("FILER_PAYS")
           .optional()
@@ -1046,7 +1046,7 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
             {
               agentId: a.counterpartyId,
               ...(a.counterpartyPrincipalId ? { principalId: a.counterpartyPrincipalId } : {}),
-              ...(a.counterpartyNotice ? { notice: a.counterpartyNotice } : {}),
+              ...(a.counterpartyNotice ? { notice: unwrapUntrusted(a.counterpartyNotice) as PartyContact } : {}),
             },
           ],
           ...(a.feeMode !== undefined || a.windows !== undefined || a.determinationConsent !== undefined || a.discloseGapOnFailure !== undefined

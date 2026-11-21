@@ -16,6 +16,9 @@
  *   AGENT_MEDIATE_EXPECTED_RULES_HASH optional 64-hex expected mechanism rulesHash pin (CR-SDK-L8)
  *   AGENT_MEDIATE_WEBHOOK_URL     optional https webhook URL pinned by the operator: the model can never redirect
  *                                 your party-only dispute events elsewhere (CR-SDK-M3)
+ *   AGENT_MEDIATE_A2A_CARD_URL    optional operator-pinned https A2A Agent Card URL for standing notifications
+ *   AGENT_MEDIATE_NOTIFY_EMAIL    optional operator-pinned notification email address
+ *   AGENT_MEDIATE_ALLOW_DYNAMIC_WEBHOOKS set "true" to opt in to model-supplied notification URLs/emails (default false)
  *
  * Logs go to stderr; stdout carries the MCP protocol.
  */
@@ -39,13 +42,13 @@ import { createMcpServer, validateConfiguredMandates } from "./index.ts";
 
 const cliArgs = process.argv.slice(2);
 if (cliArgs.includes("--version") || cliArgs.includes("-v")) {
-  console.log("0.1.1");
+  console.log("0.1.2");
   process.exit(0);
 }
 if (cliArgs.includes("--help") || cliArgs.includes("-h")) {
   console.log(
     [
-      "agent-mediate-mcp v0.1.1 — Model Context Protocol (stdio) server for Agent-Mediate",
+      "agent-mediate-mcp v0.1.2 — Model Context Protocol (stdio) server for Agent-Mediate",
       "",
       "Required environment variables:",
       "  AGENT_MEDIATE_URL                 API base URL (e.g. https://api.ai-agents-mediation.com)",

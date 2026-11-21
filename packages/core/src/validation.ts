@@ -202,9 +202,27 @@ function hasGridPointInBounds(issue: Issue, b: { min: number; max: number } | un
   return eff.min <= eff.max + 1e-9;
 }
 
+const MANDATE_ALLOWED_KEYS = new Set([
+  "id",
+  "principalId",
+  "agentId",
+  "bounds",
+  "expiresAt",
+  "scope",
+  "issuedAt",
+  "determinationConsent",
+  "determinationBounds",
+  "signature",
+]);
+const MANDATE_SCOPE_ALLOWED_KEYS = new Set(["contractHash", "counterpartyId"]);
+const MANDATE_BOUND_ALLOWED_KEYS = new Set(["min", "max"]);
+
 /** Structure only; coverage of issues is checked once issues are confirmed. */
 export function validateMandateShape(mandate: Mandate, agentId: string, now: number): void {
   if (!isPlainObject(mandate)) fail("INVALID_INPUT", "mandate required");
+  for (const key of Object.keys(mandate)) {
+    if (!MANDATE_ALLOWED_KEYS.has(key)) fail("INVALID_INPUT", `mandate.${key} is not a supported field`);
+  }
   requireText(mandate.id, 1, 128, "mandate.id");
   requireText(mandate.principalId, 1, 256, "mandate.principalId");
   if (mandate.issuedAt !== undefined && (!Number.isSafeInteger(mandate.issuedAt) || mandate.issuedAt <= 0 || mandate.issuedAt > now + 5 * MINUTE)) {
@@ -212,15 +230,28 @@ export function validateMandateShape(mandate: Mandate, agentId: string, now: num
   }
   if (mandate.agentId !== agentId) fail("NOT_AUTHORIZED", "mandate was not issued to this agent");
   if (!Number.isSafeInteger(mandate.expiresAt)) fail("INVALID_INPUT", "mandate.expiresAt must be a unix-ms integer timestamp");
+  if (mandate.issuedAt !== undefined && mandate.issuedAt >= mandate.expiresAt) {
+    fail("INVALID_INPUT", "mandate.issuedAt must be strictly before mandate.expiresAt");
+  }
   if (mandate.expiresAt <= now) fail("MANDATE_EXPIRED", "mandate has expired");
   if (!isPlainObject(mandate.bounds)) fail("INVALID_INPUT", "mandate.bounds must be an object");
   for (const [id, b] of Object.entries(mandate.bounds)) {
-    if (!isPlainObject(b) || !Number.isFinite(b.min) || !Number.isFinite(b.max) || b.min > b.max) {
+    if (!isPlainObject(b)) fail("INVALID_INPUT", `mandate bounds for ${id} are invalid`);
+    for (const bk of Object.keys(b)) {
+      if (!MANDATE_BOUND_ALLOWED_KEYS.has(bk)) fail("INVALID_INPUT", `mandate bounds for ${id} contain unsupported field ${bk}`);
+    }
+    if (!Number.isFinite(b.min) || !Number.isFinite(b.max) || b.min > b.max) {
       fail("INVALID_INPUT", `mandate bounds for ${id} are invalid`);
     }
   }
   if (mandate.scope !== undefined) {
     if (!isPlainObject(mandate.scope)) fail("INVALID_INPUT", "mandate.scope must be an object");
+    for (const sk of Object.keys(mandate.scope)) {
+      if (!MANDATE_SCOPE_ALLOWED_KEYS.has(sk)) fail("INVALID_INPUT", `mandate.scope.${sk} is not a supported scope field`);
+    }
+    if (mandate.scope.contractHash === undefined && mandate.scope.counterpartyId === undefined) {
+      fail("INVALID_INPUT", "mandate.scope must specify contractHash and/or counterpartyId");
+    }
     if (mandate.scope.contractHash !== undefined && (typeof mandate.scope.contractHash !== "string" || mandate.scope.contractHash.length === 0)) {
       fail("INVALID_INPUT", "mandate.scope.contractHash must be a non-empty string");
     }
@@ -236,7 +267,11 @@ export function validateMandateShape(mandate: Mandate, agentId: string, now: num
       fail("INVALID_INPUT", "mandate.determinationBounds must be an object");
     }
     for (const [id, b] of Object.entries(mandate.determinationBounds)) {
-      if (!isPlainObject(b) || !Number.isFinite(b.min) || !Number.isFinite(b.max) || b.min > b.max) {
+      if (!isPlainObject(b)) fail("INVALID_INPUT", `mandate determinationBounds for ${id} are invalid`);
+      for (const bk of Object.keys(b)) {
+        if (!MANDATE_BOUND_ALLOWED_KEYS.has(bk)) fail("INVALID_INPUT", `mandate determinationBounds for ${id} contain unsupported field ${bk}`);
+      }
+      if (!Number.isFinite(b.min) || !Number.isFinite(b.max) || b.min > b.max) {
         fail("INVALID_INPUT", `mandate determinationBounds for ${id} are invalid`);
       }
     }

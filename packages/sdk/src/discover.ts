@@ -513,12 +513,12 @@ function extractDidMethodsAndCandidatesFromDidDoc(
   return { candidates: [...candidates], methodById };
 }
 
-function agentCardMatchesOrigin(
+function inspectAgentCardOriginClaims(
   card: Record<string, unknown>,
   expectedOrigin: string,
   allowedDidWebs: Set<string>,
   hasCustomSameOriginWebhook: boolean,
-): boolean {
+): { hasForeignClaim: boolean; hasPositiveOriginClaim: boolean } {
   let hasPositiveOriginClaim = hasCustomSameOriginWebhook;
   const sameOriginUrl = (raw: unknown): boolean => {
     try {
@@ -529,22 +529,22 @@ function agentCardMatchesOrigin(
   };
 
   if (card.url !== undefined) {
-    if (!sameOriginUrl(card.url)) return false;
+    if (!sameOriginUrl(card.url)) return { hasForeignClaim: true, hasPositiveOriginClaim: false };
     hasPositiveOriginClaim = true;
   }
   if (card.supportedInterfaces !== undefined) {
-    if (!Array.isArray(card.supportedInterfaces)) return false;
+    if (!Array.isArray(card.supportedInterfaces)) return { hasForeignClaim: true, hasPositiveOriginClaim: false };
     for (const iface of card.supportedInterfaces as Array<Record<string, unknown>>) {
-      if (!iface || typeof iface !== "object") return false;
+      if (!iface || typeof iface !== "object") return { hasForeignClaim: true, hasPositiveOriginClaim: false };
       if (iface.url !== undefined) {
-        if (!sameOriginUrl(iface.url)) return false;
+        if (!sameOriginUrl(iface.url)) return { hasForeignClaim: true, hasPositiveOriginClaim: false };
         hasPositiveOriginClaim = true;
       }
     }
   }
   const provider = card.provider as Record<string, unknown> | undefined;
   if (provider && typeof provider === "object" && provider.url !== undefined) {
-    if (!sameOriginUrl(provider.url)) return false;
+    if (!sameOriginUrl(provider.url)) return { hasForeignClaim: true, hasPositiveOriginClaim: false };
     hasPositiveOriginClaim = true;
   }
   if (Array.isArray(card.signatures)) {
@@ -556,28 +556,40 @@ function agentCardMatchesOrigin(
           jku?: unknown;
         };
         if (hdr.jku !== undefined) {
-          if (!sameOriginUrl(hdr.jku)) return false;
+          if (!sameOriginUrl(hdr.jku)) return { hasForeignClaim: true, hasPositiveOriginClaim: false };
           hasPositiveOriginClaim = true;
         }
         if (typeof hdr.kid === "string" && hdr.kid.startsWith("did:web:")) {
           const kidDidWeb = hdr.kid.split("#")[0]!;
-          if (!allowedDidWebs.has(kidDidWeb)) return false;
+          if (!allowedDidWebs.has(kidDidWeb)) return { hasForeignClaim: true, hasPositiveOriginClaim: false };
           hasPositiveOriginClaim = true;
         }
       } catch {
-        return false;
+        return { hasForeignClaim: true, hasPositiveOriginClaim: false };
       }
     }
   }
-  return hasPositiveOriginClaim;
+  return { hasForeignClaim: false, hasPositiveOriginClaim };
 }
+
+function agentCardMatchesOrigin(
+  card: Record<string, unknown>,
+  expectedOrigin: string,
+  allowedDidWebs: Set<string>,
+  hasCustomSameOriginWebhook: boolean,
+): boolean {
+  const res = inspectAgentCardOriginClaims(card, expectedOrigin, allowedDidWebs, hasCustomSameOriginWebhook);
+  return !res.hasForeignClaim && res.hasPositiveOriginClaim;
+}
+
+const STANDARD_A2A_JSONRPC_BINDINGS = new Set(["JSONRPC", "JSON-RPC", "HTTP+JSONRPC"]);
 
 function extractStandardA2aRpcUrl(card: Record<string, unknown>, expectedOrigin: string): string | null {
   if (Array.isArray(card.supportedInterfaces)) {
     for (const iface of card.supportedInterfaces as Array<Record<string, unknown>>) {
       if (!iface || typeof iface !== "object" || typeof iface.url !== "string") continue;
       const binding = typeof iface.protocolBinding === "string" ? iface.protocolBinding.trim().toUpperCase() : "JSONRPC";
-      if (binding !== "JSONRPC" && binding !== "HTTP+JSONRPC") continue;
+      if (!STANDARD_A2A_JSONRPC_BINDINGS.has(binding)) continue;
       try {
         const parsed = new URL(iface.url);
         if (parsed.origin === expectedOrigin) return parsed.toString();
@@ -588,7 +600,7 @@ function extractStandardA2aRpcUrl(card: Record<string, unknown>, expectedOrigin:
   }
   if (typeof card.url === "string") {
     const transport = typeof card.preferredTransport === "string" ? card.preferredTransport.trim().toUpperCase() : "JSONRPC";
-    if (transport === "JSONRPC" || transport === "HTTP+JSONRPC") {
+    if (STANDARD_A2A_JSONRPC_BINDINGS.has(transport)) {
       try {
         const parsed = new URL(card.url);
         if (parsed.origin === expectedOrigin) return parsed.toString();
@@ -754,8 +766,20 @@ export async function discoverRespondent(
     }
   }
 
+  let rootDidWeb: string | null = null;
+  try {
+    rootDidWeb = didWebFromUrl(origin);
+  } catch {
+    rootDidWeb = null;
+  }
+  const expectedDidWeb = initialDidWeb ?? rootDidWeb;
+  const allowedDidWebs = new Set<string>();
+  if (rootDidWeb) allowedDidWebs.add(rootDidWeb);
+  if (initialDidWeb) allowedDidWebs.add(initialDidWeb);
+
   // 2. A2A Agent Card (/.well-known/agent-card.json -> /.well-known/agent.json -> Link header on /)
   let cardUrl: string | null = `${origin}/.well-known/agent-card.json`;
+  let cardFromLinkHeader = false;
   let cardRes = await getFromTarget(cardUrl, "application/json");
   if (!cardRes) {
     cardUrl = `${origin}/.well-known/agent.json`;
@@ -768,7 +792,7 @@ export async function discoverRespondent(
       cardRes = await getFromTarget(linked, "application/json");
       if (cardRes) {
         cardUrl = linked;
-        addSource("link_header");
+        cardFromLinkHeader = true;
       }
     }
   }
@@ -778,9 +802,16 @@ export async function discoverRespondent(
   if (cardRes && cardUrl) {
     try {
       const c = JSON.parse(cardRes.text) as Record<string, unknown>;
-      if (c && typeof c === "object" && !Array.isArray(c)) {
+      // L-08: Discard cross-origin/malformed Agent Cards before populating respondentContact or suppressing security.txt.
+      if (
+        c &&
+        typeof c === "object" &&
+        !Array.isArray(c) &&
+        !inspectAgentCardOriginClaims(c, origin, allowedDidWebs, false).hasForeignClaim
+      ) {
         parsedCard = c;
         parsedCardUrl = cardUrl;
+        if (cardFromLinkHeader) addSource("link_header");
         contact.a2aCardUrl = cardUrl;
         addSource("a2a_card");
       }
@@ -790,16 +821,6 @@ export async function discoverRespondent(
   }
 
   // 3. W3C did:web (/.well-known/did.json or path-scoped didDocUrl, CR3-SDK-M1 & CR3-SDK-H1)
-  let rootDidWeb: string | null = null;
-  try {
-    rootDidWeb = didWebFromUrl(origin);
-  } catch {
-    rootDidWeb = null;
-  }
-  const expectedDidWeb = initialDidWeb ?? rootDidWeb;
-  const allowedDidWebs = new Set<string>();
-  if (rootDidWeb) allowedDidWebs.add(rootDidWeb);
-  if (initialDidWeb) allowedDidWebs.add(initialDidWeb);
 
   let didDocAuthorizedKeys: string[] = [];
   let didDocMethodById = new Map<string, string>();
@@ -863,7 +884,12 @@ export async function discoverRespondent(
                   const linkedCard = await getFromTarget(ep.toString(), "application/json");
                   if (linkedCard) {
                     const c = JSON.parse(linkedCard.text) as Record<string, unknown>;
-                    if (c && typeof c === "object" && !Array.isArray(c)) {
+                    if (
+                      c &&
+                      typeof c === "object" &&
+                      !Array.isArray(c) &&
+                      !inspectAgentCardOriginClaims(c, origin, allowedDidWebs, false).hasForeignClaim
+                    ) {
                       parsedCard = c;
                       parsedCardUrl = ep.toString();
                       contact.a2aCardUrl = parsedCardUrl;
@@ -885,7 +911,7 @@ export async function discoverRespondent(
   }
 
   // Evaluate Agent Card cryptographic binding & channels (using both card candidates and did:web-authorized keys, CR3-SDK-H1 & CR3-SDK-M1)
-  if (parsedCard) {
+  if (parsedCard && parsedCardUrl) {
     const caps = parsedCard.capabilities as { extensions?: Array<{ uri?: unknown; params?: Record<string, unknown> }> } | undefined;
     let customWebhook: string | null = null;
     if (Array.isArray(caps?.extensions)) {

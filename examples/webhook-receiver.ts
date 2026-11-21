@@ -13,7 +13,7 @@
  */
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import { pathToFileURL } from "node:url";
-import { AgentMediateClient } from "@agent-mediate/sdk";
+import { AgentMediateClient, type WebhookEvent } from "@agent-mediate/sdk";
 
 export const MAX_WEBHOOK_BODY_BYTES = 65_536;
 export const DEFAULT_MAX_CACHE_ENTRIES = 10_000;
@@ -29,7 +29,7 @@ export interface WebhookReceiverOptions {
   maxBodyBytes?: number;
   maxCacheEntries?: number;
   now?: () => number;
-  onEvent?: (event: Record<string, unknown>) => void;
+  onEvent?: (event: WebhookEvent & Record<string, unknown>) => void;
 }
 
 export function createWebhookReceiverHandler(opts: WebhookReceiverOptions): RequestListener {
@@ -144,7 +144,7 @@ export function createWebhookReceiverHandler(opts: WebhookReceiverOptions): Requ
       }
       seenNonces.set(verified.nonce, now + NONCE_TTL_MS);
 
-      const dedupeKey = `${verified.event.disputeId ?? verified.event.inviteId ?? "event"}:${verified.event.seq ?? verified.event.type ?? verified.nonce}`;
+      const dedupeKey = `${verified.event.disputeId ?? verified.event.inviteId ?? "event"}:${verified.event.preCommit ? "pre:" : ""}${verified.event.seq ?? verified.event.type ?? verified.nonce}`;
       if (!processedEvents.has(dedupeKey)) {
         while (processedEvents.size >= maxCacheEntries) {
           const oldestEvent = processedEvents.values().next().value;
@@ -153,7 +153,11 @@ export function createWebhookReceiverHandler(opts: WebhookReceiverOptions): Requ
         }
         processedEvents.add(dedupeKey);
         if (opts.onEvent) {
-          opts.onEvent(verified.event as unknown as Record<string, unknown>);
+          opts.onEvent(verified.event as WebhookEvent & Record<string, unknown>);
+        } else if (verified.event.preCommit) {
+          // L-08: Pre-commit DISPUTE_NOTICE probe under requireDelivery=true: ack 200 immediately;
+          // wait for follow-up DISPUTE_FILED before calling getDispute(disputeId).
+          console.log("Verified pre-commit reachability probe:", JSON.stringify(verified.event));
         } else {
           console.log("Verified webhook event:", JSON.stringify(verified.event));
         }

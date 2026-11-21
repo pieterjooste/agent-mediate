@@ -16,7 +16,7 @@
  *   replayed as an API request, and an API request can't pass as a webhook (security review L3).
  */
 import { createHash, sign, verify } from "node:crypto";
-import { canonicalJson, sha256Hex } from "@agent-mediate/core";
+import { canonicalJson, normalizeBaseUrl, sha256Hex } from "@agent-mediate/core";
 import { publicKeyFromDidKey, type AgentKey } from "./identity.ts";
 
 export const MAX_CLOCK_SKEW_SECONDS = 300;
@@ -29,6 +29,32 @@ const ALLOWED_COMPONENTS = new Set(["@method", "@target-uri", "content-digest", 
 const NONCE = /^[A-Za-z0-9_\-.:]{16,128}$/;
 const SIGNATURE_INPUT = /^sig1=\(((?:"[^"\s]+"(?: "[^"\s]+")*)?)\)((?:;[a-z]+=(?:"[^"\\]*"|\d+))*)$/;
 const SIGNATURE = /^sig1=:([A-Za-z0-9+/]+={0,2}):$/;
+const HAS_CTL = /[\x00-\x08\x0a-\x1f\x7f]/;
+const trimOws = (s: string): string => s.replace(/^[ \t]+|[ \t]+$/g, "");
+
+function parseSignatureParams(rawParams: string): { ok: true; params: Map<string, string> } | { ok: false; reason: string } {
+  const params = new Map<string, string>();
+  for (const m of rawParams.matchAll(/;([a-z]+)=("[^"\\]*"|\d+)/g)) {
+    const key = m[1]!;
+    const rawVal = m[2]!;
+    if (params.has(key)) return { ok: false, reason: `duplicate parameter ${key}` };
+    if (!["created", "keyid", "alg", "nonce", "tag"].includes(key)) {
+      return { ok: false, reason: `unsupported parameter ${key}` };
+    }
+    if (key === "created") {
+      if (rawVal.startsWith('"') || !/^\d+$/.test(rawVal)) {
+        return { ok: false, reason: "created must be an unquoted RFC 8941 integer" };
+      }
+      params.set(key, rawVal);
+    } else {
+      if (!rawVal.startsWith('"') || !rawVal.endsWith('"')) {
+        return { ok: false, reason: `parameter ${key} must be an RFC 8941 quoted string` };
+      }
+      params.set(key, rawVal.slice(1, -1));
+    }
+  }
+  return { ok: true, params };
+}
 
 export function contentDigest(body: string | Uint8Array): string {
   return `sha-256=:${createHash("sha256").update(body).digest("base64")}:`;
@@ -130,18 +156,18 @@ export function verifyRequest(input: VerifyRequestInput): VerifyResult {
   const sigInput = input.header("signature-input");
   const sigHeader = input.header("signature");
   if (!sigInput || !sigHeader) return { ok: false, reason: "missing Signature-Input or Signature header" };
+  if (HAS_CTL.test(sigInput) || HAS_CTL.test(sigHeader)) {
+    return { ok: false, reason: "Signature-Input or Signature contains control characters" };
+  }
+  const cleanSigInput = trimOws(sigInput);
+  const cleanSigHeader = trimOws(sigHeader);
 
-  const parsed = SIGNATURE_INPUT.exec(sigInput.trim());
+  const parsed = SIGNATURE_INPUT.exec(cleanSigInput);
   if (!parsed) return { ok: false, reason: "malformed Signature-Input (expected a single sig1 entry)" };
   const components = parsed[1] ? parsed[1].split(" ").map((c) => c.slice(1, -1)) : [];
-  const params = new Map<string, string>();
-  for (const m of parsed[2]!.matchAll(/;([a-z]+)=("[^"\\]*"|\d+)/g)) {
-    if (params.has(m[1]!)) return { ok: false, reason: `duplicate parameter ${m[1]}` };
-    params.set(m[1]!, m[2]!.startsWith('"') ? m[2]!.slice(1, -1) : m[2]!);
-  }
-  for (const key of params.keys()) {
-    if (!["created", "keyid", "alg", "nonce", "tag"].includes(key)) return { ok: false, reason: `unsupported parameter ${key}` };
-  }
+  const parsedParams = parseSignatureParams(parsed[2]!);
+  if (!parsedParams.ok) return parsedParams;
+  const params = parsedParams.params;
   const tag = params.get("tag") ?? null;
   if (tag !== (input.expectTag ?? null)) {
     return { ok: false, reason: input.expectTag ? `signature tag must be "${input.expectTag}"` : `unexpected signature tag "${String(tag).slice(0, 64)}" (webhook signatures are not API credentials)` };
@@ -163,7 +189,8 @@ export function verifyRequest(input: VerifyRequestInput): VerifyResult {
     return { ok: false, reason: "content-digest must be covered when present" };
   }
   if (components.includes("content-digest")) {
-    if (input.header("content-digest")?.trim() !== contentDigest(input.body)) {
+    const rawCd = input.header("content-digest");
+    if (rawCd === null || HAS_CTL.test(rawCd) || trimOws(rawCd) !== contentDigest(input.body)) {
       return { ok: false, reason: "content-digest does not match body" };
     }
   }
@@ -172,7 +199,7 @@ export function verifyRequest(input: VerifyRequestInput): VerifyResult {
   }
   if (components.includes("idempotency-key")) {
     const idem = input.header("idempotency-key");
-    if (idem === null || idem.trim().length === 0) {
+    if (idem === null || HAS_CTL.test(idem) || trimOws(idem).length === 0) {
       return { ok: false, reason: "covered idempotency-key must be non-empty" };
     }
   }
@@ -181,7 +208,9 @@ export function verifyRequest(input: VerifyRequestInput): VerifyResult {
   if (!Number.isFinite(input.now) || input.now <= 0) {
     return { ok: false, reason: "now must be a positive finite timestamp" };
   }
-  const created = Number(params.get("created"));
+  const createdStr = params.get("created");
+  if (!createdStr) return { ok: false, reason: "created is required" };
+  const created = Number(createdStr);
   if (!Number.isSafeInteger(created)) return { ok: false, reason: "created is required" };
   if (Math.abs(input.now / 1000 - created) > MAX_CLOCK_SKEW_SECONDS) return { ok: false, reason: "created is outside the allowed clock skew" };
   const nonce = params.get("nonce") ?? "";
@@ -195,9 +224,9 @@ export function verifyRequest(input: VerifyRequestInput): VerifyResult {
     return { ok: false, reason: "keyid must be an Ed25519 did:key" };
   }
 
-  const sig = SIGNATURE.exec(sigHeader.trim());
+  const sig = SIGNATURE.exec(cleanSigHeader);
   if (!sig) return { ok: false, reason: "malformed Signature header" };
-  const signatureParams = sigInput.trim().slice(`${LABEL}=`.length);
+  const signatureParams = cleanSigInput.slice(`${LABEL}=`.length);
   let base: string;
   try {
     base = signatureBase(components, input.method, input.targetUri, input.header, signatureParams);
@@ -213,10 +242,10 @@ export function verifyRequest(input: VerifyRequestInput): VerifyResult {
   const proof: RequestSignatureProof = {
     method: input.method.toUpperCase(),
     targetUri: input.targetUri,
-    contentDigest: components.includes("content-digest") ? input.header("content-digest")!.trim() : null,
-    idempotencyKey: components.includes("idempotency-key") ? input.header("idempotency-key")!.trim() : null,
-    signatureInput: sigInput.trim(),
-    signature: sigHeader.trim(),
+    contentDigest: components.includes("content-digest") ? trimOws(input.header("content-digest")!) : null,
+    idempotencyKey: components.includes("idempotency-key") ? trimOws(input.header("idempotency-key")!) : null,
+    signatureInput: cleanSigInput,
+    signature: cleanSigHeader,
     created,
     nonce,
     keyid,
@@ -228,24 +257,13 @@ export interface VerifyDisputeActionTargetInput {
   expectedDisputeId: string;
   expectedAction: string;
   expectedBaseUrl?: string;
+  expectedRound?: number;
 }
 
 function normalizeExpectedBaseUrl(raw: string): string | null {
   if (typeof raw !== "string") return null;
-  const trimmed = raw.replace(/\/+$/, "");
-  if (!trimmed) return null;
   try {
-    const u = new URL(trimmed);
-    if (
-      (u.protocol !== "http:" && u.protocol !== "https:") ||
-      u.username !== "" ||
-      u.password !== "" ||
-      u.search !== "" ||
-      u.hash !== ""
-    ) {
-      return null;
-    }
-    return trimmed;
+    return normalizeBaseUrl(raw);
   } catch {
     return null;
   }
@@ -262,6 +280,9 @@ export function verifyDisputeActionTarget(
 ): { ok: true } | { ok: false; reason: string } {
   if (!proof || typeof proof.method !== "string" || typeof proof.targetUri !== "string") {
     return { ok: false, reason: "invalid proof method or targetUri" };
+  }
+  if (/[\s\x00-\x1f\x7f]/.test(proof.method) || /[\s\x00-\x1f\x7f]/.test(proof.targetUri)) {
+    return { ok: false, reason: "proof method or targetUri contains whitespace or control characters" };
   }
   if (!opts || typeof opts.expectedDisputeId !== "string" || opts.expectedDisputeId.length === 0) {
     return { ok: false, reason: "expectedDisputeId must be a non-empty string" };
@@ -330,7 +351,18 @@ export function verifyDisputeActionTarget(
         return { ok: false, reason: "submit_offer targetUri mismatch" };
       }
       const roundSeg = pathPart.slice(`${prefix}/rounds/`.length, -"/offer".length);
-      return /^[1-9][0-9]*$/.test(roundSeg) ? { ok: true } : { ok: false, reason: "submit_offer round segment invalid" };
+      if (!/^[1-9][0-9]*$/.test(roundSeg)) return { ok: false, reason: "submit_offer round segment invalid" };
+      const roundNum = Number(roundSeg);
+      if (!Number.isSafeInteger(roundNum)) return { ok: false, reason: "submit_offer round segment invalid" };
+      if (opts.expectedRound !== undefined) {
+        if (!Number.isSafeInteger(opts.expectedRound) || opts.expectedRound < 1) {
+          return { ok: false, reason: "expectedRound must be a positive integer" };
+        }
+        if (roundNum !== opts.expectedRound) {
+          return { ok: false, reason: `submit_offer round mismatch (expected ${opts.expectedRound}, got ${roundNum})` };
+        }
+      }
+      return { ok: true };
     }
     case "submit_final_offer":
       return pathPart === `${prefix}/determination/final-offer`
@@ -383,6 +415,7 @@ export interface VerifyRequestProofOptions {
   expectedBaseUrl?: string;
   expectedDisputeId?: string;
   expectedAction?: string;
+  expectedRound?: number;
   expectTag?: string;
   expectedContentDigest?: string;
   expectedIdempotencyKey?: string;
@@ -401,12 +434,20 @@ export function verifyRequestProof(
   if (typeof proof.method !== "string" || typeof proof.targetUri !== "string") {
     return { ok: false, reason: "invalid method or targetUri" };
   }
+  if (/[\s\x00-\x1f\x7f]/.test(proof.method) || /[\s\x00-\x1f\x7f]/.test(proof.targetUri)) {
+    return { ok: false, reason: "proof method or targetUri contains whitespace or control characters" };
+  }
   // CR-CORE-L2: a verifier must answer {ok:false}, never throw, on malformed stored proofs.
   if (typeof proof.signatureInput !== "string" || typeof proof.signature !== "string" || typeof proof.keyid !== "string") {
     return { ok: false, reason: "invalid signatureInput, signature or keyid" };
   }
+  if (HAS_CTL.test(proof.signatureInput) || HAS_CTL.test(proof.signature)) {
+    return { ok: false, reason: "signatureInput or signature contains control characters" };
+  }
   for (const f of ["contentDigest", "idempotencyKey"] as const) {
-    if (proof[f] !== undefined && proof[f] !== null && typeof proof[f] !== "string") return { ok: false, reason: `invalid ${f}` };
+    if (proof[f] !== undefined && proof[f] !== null && (typeof proof[f] !== "string" || HAS_CTL.test(proof[f]))) {
+      return { ok: false, reason: `invalid ${f}` };
+    }
   }
   if (opts?.expectedAgentId !== undefined && proof.keyid !== opts.expectedAgentId) {
     return { ok: false, reason: "proof keyid does not match expected agentId" };
@@ -419,6 +460,7 @@ export function verifyRequestProof(
       expectedDisputeId: opts.expectedDisputeId,
       expectedAction: opts.expectedAction,
       ...(opts.expectedBaseUrl !== undefined ? { expectedBaseUrl: opts.expectedBaseUrl } : {}),
+      ...(opts.expectedRound !== undefined ? { expectedRound: opts.expectedRound } : {}),
     });
     if (!targetOk.ok) return targetOk;
     if (BODY_REQUIRED_DISPUTE_ACTIONS.has(opts.expectedAction) && (proof.contentDigest === null || proof.contentDigest === undefined)) {
@@ -433,23 +475,19 @@ export function verifyRequestProof(
       return { ok: false, reason: "proof targetUri does not match expected baseUrl" };
     }
   }
-  if (opts?.expectedContentDigest !== undefined && (proof.contentDigest ?? null)?.trim() !== opts.expectedContentDigest.trim()) {
+  if (opts?.expectedContentDigest !== undefined && (proof.contentDigest !== null && proof.contentDigest !== undefined ? trimOws(proof.contentDigest) : null) !== trimOws(opts.expectedContentDigest)) {
     return { ok: false, reason: "proof contentDigest does not match expectedContentDigest" };
   }
-  if (opts?.expectedIdempotencyKey !== undefined && (proof.idempotencyKey ?? null)?.trim() !== opts.expectedIdempotencyKey.trim()) {
+  if (opts?.expectedIdempotencyKey !== undefined && (proof.idempotencyKey !== null && proof.idempotencyKey !== undefined ? trimOws(proof.idempotencyKey) : null) !== trimOws(opts.expectedIdempotencyKey)) {
     return { ok: false, reason: "proof idempotencyKey does not match expectedIdempotencyKey" };
   }
-  const parsed = SIGNATURE_INPUT.exec((proof.signatureInput ?? "").trim());
+  const cleanSigInput = trimOws(proof.signatureInput);
+  const parsed = SIGNATURE_INPUT.exec(cleanSigInput);
   if (!parsed) return { ok: false, reason: "malformed Signature-Input" };
   const components = parsed[1] ? parsed[1].split(" ").map((c) => c.slice(1, -1)) : [];
-  const params = new Map<string, string>();
-  for (const m of parsed[2]!.matchAll(/;([a-z]+)=("[^"\\]*"|\d+)/g)) {
-    if (params.has(m[1]!)) return { ok: false, reason: `duplicate parameter ${m[1]}` };
-    params.set(m[1]!, m[2]!.startsWith('"') ? m[2]!.slice(1, -1) : m[2]!);
-  }
-  for (const key of params.keys()) {
-    if (!["created", "keyid", "alg", "nonce", "tag"].includes(key)) return { ok: false, reason: `unsupported parameter ${key}` };
-  }
+  const parsedParams = parseSignatureParams(parsed[2]!);
+  if (!parsedParams.ok) return parsedParams;
+  const params = parsedParams.params;
   const tag = params.get("tag") ?? null;
   if (tag !== (opts?.expectTag ?? null)) {
     return {
@@ -466,21 +504,23 @@ export function verifyRequestProof(
     if (!components.includes(required)) return { ok: false, reason: `${required} must be covered` };
   }
   if (components.includes("content-digest")) {
-    if (typeof proof.contentDigest !== "string" || !/^sha-256=:[A-Za-z0-9+/]+={0,2}:$/.test(proof.contentDigest.trim())) {
+    if (typeof proof.contentDigest !== "string" || !/^sha-256=:[A-Za-z0-9+/]+={0,2}:$/.test(trimOws(proof.contentDigest))) {
       return { ok: false, reason: "invalid covered content-digest" };
     }
   } else if (proof.contentDigest !== null) {
     return { ok: false, reason: "contentDigest must be null when not covered" };
   }
   if (components.includes("idempotency-key")) {
-    if (typeof proof.idempotencyKey !== "string" || proof.idempotencyKey.trim().length === 0) {
+    if (typeof proof.idempotencyKey !== "string" || trimOws(proof.idempotencyKey).length === 0) {
       return { ok: false, reason: "invalid covered idempotency-key" };
     }
   } else if (proof.idempotencyKey !== null) {
     return { ok: false, reason: "idempotencyKey must be null when not covered" };
   }
   if (params.get("alg") !== "ed25519") return { ok: false, reason: 'alg must be "ed25519"' };
-  const created = Number(params.get("created"));
+  const createdStr = params.get("created");
+  if (!createdStr) return { ok: false, reason: "created mismatch" };
+  const created = Number(createdStr);
   if (!Number.isSafeInteger(created) || created !== proof.created) return { ok: false, reason: "created mismatch" };
   const nonce = params.get("nonce") ?? "";
   if (!NONCE.test(nonce) || nonce !== proof.nonce) return { ok: false, reason: "nonce mismatch" };
@@ -493,9 +533,10 @@ export function verifyRequestProof(
   } catch {
     return { ok: false, reason: "keyid must be an Ed25519 did:key" };
   }
-  const sig = SIGNATURE.exec((proof.signature ?? "").trim());
+  const cleanSigHeader = trimOws(proof.signature);
+  const sig = SIGNATURE.exec(cleanSigHeader);
   if (!sig) return { ok: false, reason: "malformed Signature" };
-  const signatureParams = proof.signatureInput.trim().slice(`${LABEL}=`.length);
+  const signatureParams = cleanSigInput.slice(`${LABEL}=`.length);
   const header = (name: string) =>
     name === "content-digest" ? proof.contentDigest : name === "idempotency-key" ? proof.idempotencyKey : null;
   let base: string;
@@ -513,10 +554,10 @@ export function verifyRequestProof(
   const normalized: RequestSignatureProof = {
     method: proof.method.toUpperCase(),
     targetUri: proof.targetUri,
-    contentDigest: proof.contentDigest !== null ? proof.contentDigest.trim() : null,
-    idempotencyKey: proof.idempotencyKey !== null ? proof.idempotencyKey.trim() : null,
-    signatureInput: proof.signatureInput.trim(),
-    signature: proof.signature.trim(),
+    contentDigest: proof.contentDigest !== null ? trimOws(proof.contentDigest) : null,
+    idempotencyKey: proof.idempotencyKey !== null ? trimOws(proof.idempotencyKey) : null,
+    signatureInput: cleanSigInput,
+    signature: cleanSigHeader,
     created: proof.created,
     nonce: proof.nonce,
     keyid: proof.keyid,
@@ -536,13 +577,22 @@ function signatureBase(
   signatureParams: string,
 ): string {
   const lines = components.map((c) => {
-    let value: string | null;
-    if (c === "@method") value = method.toUpperCase();
-    else if (c === "@target-uri") value = targetUri;
-    else value = header(c);
+    if (c === "@method") {
+      if (typeof method !== "string" || !/^[A-Za-z]+$/.test(method)) {
+        throw new Error("@method must be an ASCII HTTP method token");
+      }
+      return `"@method": ${method.toUpperCase()}`;
+    }
+    if (c === "@target-uri") {
+      if (typeof targetUri !== "string" || targetUri.length === 0 || /[\s\x00-\x1f\x7f]/.test(targetUri)) {
+        throw new Error("@target-uri must not contain whitespace or control characters");
+      }
+      return `"@target-uri": ${targetUri}`;
+    }
+    const value = header(c);
     if (value === null) throw new Error(`covered header ${c} is missing`);
-    if (/[\r\n]/.test(value)) throw new Error(`covered header ${c} contains a newline`);
-    return `"${c}": ${value.trim()}`;
+    if (HAS_CTL.test(value)) throw new Error(`covered header ${c} contains control characters`);
+    return `"${c}": ${trimOws(value)}`;
   });
   lines.push(`"@signature-params": ${signatureParams}`);
   return lines.join("\n");

@@ -760,12 +760,12 @@ function handle(tx: Tx, cmd: Exclude<Command, { type: "TICK" }>): void {
         const issues = s.issues!;
         if (s.parties.claimant.mandate.expiresAt <= tx.now || s.parties.respondent!.mandate.expiresAt <= tx.now) {
           imp.status = "DECLINED";
-          emit(tx, "IMPROVEMENT_DECLINED", "both", { reason: "MANDATE_EXPIRED" });
+          emit(tx, "IMPROVEMENT_DECLINED", "both", {});
           return;
         }
         if (!withinMandate(issues, s.parties.claimant.mandate, imp.terms) || !withinMandate(issues, s.parties.respondent!.mandate, imp.terms)) {
           imp.status = "DECLINED";
-          emit(tx, "IMPROVEMENT_DECLINED", "both", { reason: "MANDATE_VIOLATION" });
+          emit(tx, "IMPROVEMENT_DECLINED", "both", {});
           return;
         }
         imp.status = "ACCEPTED";

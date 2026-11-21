@@ -59,6 +59,7 @@ import {
   type SignedDocument,
 } from "@agent-mediate/protocol";
 import { AgentMediateError } from "./errors.ts";
+import { discoverRespondent, type DiscoveredRespondent, type DiscoverRespondentOptions } from "./discover.ts";
 import { BASE_MAINNET, PaymentPolicyError, type PaidOperation, type Payer, type PaymentRequired } from "./payer.ts";
 
 export { AgentMediateError } from "./errors.ts";
@@ -92,7 +93,14 @@ export interface PlatformInfo {
   mechanismDoc?: string;
   transparency?: string;
   transparencyCheckpoint?: string;
+  honoursRoll?: string;
+  honoursApi?: string;
+  requestSignatures?: string;
+  documentProof?: string;
   fees: { payTo: string; network: string; fullFeeAtomic: string } | { waived: true };
+  practiceBot?: { did: string; role: string };
+  termsOfService?: string;
+  privacyPolicy?: string;
 }
 
 export interface RulesInfo {
@@ -252,6 +260,9 @@ export interface MandateInput {
   determinationConsent?: boolean;
   /** Optional per-issue bounds for binding final-offer determination (may be tighter OR wider than `bounds`; signed into the mandate when `bounds` is used). */
   determinationBounds?: Bounds;
+  /** Guard against accidentally passing a bare `Mandate` object instead of `{ mandate }` (`M-09`). */
+  signature?: never;
+  principalId?: never;
 }
 
 export interface RejectIssuesInput {
@@ -511,15 +522,22 @@ export interface DisputeSummary {
   untrusted?: Array<{ path: string; authoredBy: string }>;
 }
 
-/** A verified webhook event. `recipient` names the party and (once bound) agent it was sent to (security review L3, `CR3-SDK-M2`). */
+/** A verified webhook event. `recipient` names the party and (once bound) agent it was sent to (security review L3, `CR3-SDK-M2`, `L-08`). */
 export interface WebhookEvent {
   disputeId?: string;
   inviteId?: string;
   seq?: number;
   type: string;
   at: number;
-  data: unknown;
+  data?: unknown;
   recipient: { party: "claimant" | "respondent"; agentId?: string };
+  /** True on pre-commit `DISPUTE_NOTICE` probe under `requireDelivery: true` before DB commit (`DISPUTE_FILED` follows after commit). */
+  preCommit?: boolean;
+  followUpEvent?: string;
+  noticeUrl?: string;
+  signedNotice?: SignedDocument<DisputeNoticeDocument>;
+  inviteUrl?: string;
+  signedInvite?: SignedDocument<DisputeInviteDocument>;
 }
 
 export interface VerifyNoticeOptions {
@@ -674,6 +692,28 @@ function mergePriorDeterminationBounds(input: MandateInput, ctx?: MandateContext
   return out;
 }
 
+function assertNotBareMandate(input: unknown): void {
+  if (
+    input !== null &&
+    typeof input === "object" &&
+    !(input as { mandate?: unknown }).mandate &&
+    ("signature" in input || "principalId" in input)
+  ) {
+    throw new Error("pass { mandate }, not a bare Mandate object");
+  }
+}
+
+function isRedirectFetchError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const msg = typeof (err as { message?: unknown }).message === "string" ? (err as { message: string }).message : "";
+  const cause = (err as { cause?: unknown }).cause;
+  const causeMsg =
+    cause && typeof cause === "object" && typeof (cause as { message?: unknown }).message === "string"
+      ? (cause as { message: string }).message
+      : "";
+  return /redirect/i.test(msg) || /redirect/i.test(causeMsg);
+}
+
 export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
   readonly baseUrl: string;
   readonly agentKey: AgentKey;
@@ -683,6 +723,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
   private readonly expectedEnvironment: string | undefined;
   private readonly expectedRulesHash: string | undefined;
   private readonly payer: Payer | undefined;
+  private readonly customFetch: FetchLike | undefined;
   private readonly fetchImpl: FetchLike;
   private readonly now: () => number;
   private readonly maxRetries: number;
@@ -737,6 +778,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
     this.expectedRulesHash = opts.expectedRulesHash;
     this.defaultView = (opts.defaultView ?? "full") as DefaultView;
     this.payer = opts.payer;
+    this.customFetch = opts.fetch;
     this.fetchImpl = opts.fetch ?? ((url, init) => fetch(url, init));
     this.now = opts.now ?? Date.now;
     this.maxRetries = opts.maxRetries ?? 3;
@@ -755,7 +797,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
       ...(this.expectedRulesHash ? { expectedRulesHash: this.expectedRulesHash } : {}),
       defaultView,
       ...(this.payer ? { payer: this.payer } : {}),
-      fetch: this.fetchImpl,
+      ...(this.customFetch ? { fetch: this.customFetch } : {}),
       now: this.now,
       maxRetries: this.maxRetries,
       timeoutMs: this.timeoutMs,
@@ -1132,6 +1174,23 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
   }
 
   /**
+   * Probe public metadata for a target domain, HTTPS URL, or `did:web` before filing a dispute (`L-08`),
+   * automatically binding this client's `baseUrl`, verified/pinned `platformDid`, `expectedEnvironment`, `expectedRulesHash`, and `now` clock.
+   */
+  discoverRespondent(target: string, opts: DiscoverRespondentOptions = {}): Promise<DiscoveredRespondent> {
+    const platDid = this.verifiedActivePlatformDid ?? this.pinnedPlatformDid;
+    return discoverRespondent(target, {
+      baseUrl: this.baseUrl,
+      ...(platDid !== undefined ? { platformDid: platDid } : {}),
+      ...(this.expectedEnvironment !== undefined ? { expectedEnvironment: this.expectedEnvironment } : {}),
+      ...(this.expectedRulesHash !== undefined ? { expectedRulesHash: this.expectedRulesHash } : {}),
+      ...(this.customFetch && !opts.apiFetch ? { apiFetch: this.customFetch as (url: string, init?: RequestInit) => Promise<Response> } : {}),
+      now: this.now,
+      ...opts,
+    });
+  }
+
+  /**
    * File a dispute. Leave `config.feeMode` as `"FILER_PAYS"` (default) whenever inviting a cold or unregistered
    * respondent so joining costs them `$0.00` and requires zero crypto/x402 wallet setup.
    */
@@ -1139,6 +1198,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
     input: FileDisputeInput,
     idempotencyKey?: string,
   ): Promise<DisputeResponse<DefaultViewOf<DefaultView>> & { disputeId: string; notice?: FilingNotice }> {
+    assertNotBareMandate(input);
     const key = idempotencyKey ?? `sdk-${randomUUID()}`;
     const { bounds, mandate, determinationConsent, determinationBounds, ...rest } = input;
     const scope = { contractHash: input.contractHash, counterpartyId: input.respondentId };
@@ -1415,6 +1475,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
   }
 
   async join(id: string, input: JoinInput, idempotencyKey?: string): Promise<DisputeResponse<DefaultViewOf<DefaultView>>> {
+    assertNotBareMandate(input);
     const key = idempotencyKey ?? `sdk-${randomUUID()}`;
     const { bounds, mandate, determinationConsent, determinationBounds, ...rest } = input;
     const scope = bounds && !mandate ? await this.scopeOf(id, key) : undefined;
@@ -1454,6 +1515,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
     mandateInput: MandateInput = {},
     idempotencyKey?: string,
   ): Promise<DisputeResponse<DefaultViewOf<DefaultView>>> {
+    assertNotBareMandate(mandateInput);
     const key = idempotencyKey ?? `sdk-${randomUUID()}`;
     const ctx = mandateInput.bounds && !mandateInput.mandate ? await this.scopeOf(id, key) : undefined;
     const effectiveInput = mergePriorDeterminationBounds(mandateInput, ctx);
@@ -1492,6 +1554,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
    * At most 3 updates per party; `determinationConsent` and Round-1 declared private inputs remain frozen, and zero bits leak to the counterparty.
    */
   async updateMandate(id: string, mandateInput: MandateInput, idempotencyKey?: string): Promise<DisputeResponse<DefaultViewOf<DefaultView>>> {
+    assertNotBareMandate(mandateInput);
     const key = idempotencyKey ?? `sdk-${randomUUID()}`;
     const ctx = mandateInput.bounds && !mandateInput.mandate ? await this.scopeOf(id, key) : undefined;
     const effectiveInput = mergePriorDeterminationBounds(mandateInput, ctx);
@@ -1932,6 +1995,9 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
           ...this.signalForRequest(),
         });
       } catch (e) {
+        if (isRedirectFetchError(e)) {
+          throw new AgentMediateError(302, "UNEXPECTED_REDIRECT", `refusing HTTP redirect from ${path}`);
+        }
         if (await this.backoff(attempt)) continue;
         throw new AgentMediateError(0, "NETWORK_ERROR", (e as Error).message);
       }
@@ -1967,6 +2033,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
     idempotencyKey?: string,
     timing?: { minIssuedAt?: number; minExpiresAt?: number },
   ): Mandate {
+    assertNotBareMandate(input);
     if (input.mandate) {
       if (input.determinationConsent !== undefined && (input.mandate.determinationConsent === true) !== input.determinationConsent) {
         throw new Error("determinationConsent must be signed inside mandate.determinationConsent when providing a pre-signed mandate");
@@ -2048,7 +2115,7 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
     if (this.verifiedPayTo !== null && this.verifiedPayTo.toLowerCase() === rawPayTo.toLowerCase()) {
       return this.verifiedPayTo;
     }
-    const expectedDid = this.pinnedPlatformDid ?? info.did;
+    let expectedDid = this.verifiedActivePlatformDid ?? this.pinnedPlatformDid ?? info.did;
     let card: Record<string, unknown>;
     try {
       card = await this.getPublic<Record<string, unknown>>(
@@ -2059,7 +2126,19 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
     } catch (e) {
       throw new PaymentPolicyError(`could not verify /.well-known/agent-card.json for payTo: ${(e as Error).message}`);
     }
-    if (!verifyAgentCardSignature(card, expectedDid)) {
+    let sigOk = verifyAgentCardSignature(card, expectedDid);
+    if (!sigOk && this.pinnedPlatformDid) {
+      try {
+        const hist = await this.keyHistory(true);
+        if (hist.document.activeDid !== expectedDid) {
+          expectedDid = hist.document.activeDid;
+          sigOk = verifyAgentCardSignature(card, expectedDid);
+        }
+      } catch {
+        sigOk = false;
+      }
+    }
+    if (!sigOk) {
       throw new PaymentPolicyError("/.well-known/agent-card.json failed platform signature verification");
     }
     const normBase = this.baseUrl.replace(/\/+$/, "");
@@ -2164,12 +2243,19 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
     // Every error from a keyed (mutating) request carries its Idempotency-Key, and says so loudly once a payment was
     // attached, so a caller (or an LLM via MCP) retries with the SAME key instead of paying twice.
     const fail = (status: number, code: string, message: string, errBody?: unknown): AgentMediateError => {
-      const paymentSent = payment !== null && code !== "RESPONDENT_UNREACHABLE";
-      if (payment !== null && code === "RESPONDENT_UNREACHABLE") {
+      // H-05: Only ambiguous transport/facilitator failures may have settled a payment in flight.
+      // Definitive client/protocol rejections (402 invalid payment, 400/404/409/410/422, redirects) never settled ($0.00 charged):
+      // report paymentSent=false, clear pendingPaid, and release the unsettled EIP-3009 authorization so budget reclaims after validBefore + 60s.
+      const retainPendingPaid =
+        payment !== null &&
+        code !== "RESPONDENT_UNREACHABLE" &&
+        (status === 0 || status === 429 || status >= 500 || AMBIGUOUS_PAYMENT_CODES.has(code));
+      const paymentSent = retainPendingPaid;
+      if (payment !== null && !retainPendingPaid) {
         this.payer?.releaseUnsettled?.(payment);
       }
       if (pendingKey) {
-        if (payment !== null && (status === 0 || status === 429 || status >= 500 || AMBIGUOUS_PAYMENT_CODES.has(code))) {
+        if (payment !== null && retainPendingPaid) {
           if (!this.pendingPaid.has(pendingKey) && this.pendingPaid.size >= PENDING_PAID_MAX) {
             const oldest = this.pendingPaid.keys().next().value;
             if (oldest !== undefined) this.pendingPaid.delete(oldest);
@@ -2225,6 +2311,9 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
           ...this.signalForRequest(),
         });
       } catch (e) {
+        if (isRedirectFetchError(e)) {
+          throw fail(302, "UNEXPECTED_REDIRECT", `refusing HTTP redirect from ${path}`);
+        }
         if (await this.backoff(attempt++)) continue;
         throw fail(0, "NETWORK_ERROR", (e as Error).message);
       }

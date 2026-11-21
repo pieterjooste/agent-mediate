@@ -24,7 +24,6 @@ npm install @agent-mediate/sdk
 import {
   AgentMediateClient,
   contractHash,
-  discoverRespondent,
   generateAgentKey,
 } from "@agent-mediate/sdk";
 
@@ -42,10 +41,8 @@ await client.registerNotifications({ webhookUrl: "https://my-agent.example/webho
 // Compute an RFC 8785 (JCS) sha256 hash of a shared JSON contract
 const hash = contractHash({ orderId: "ord_42", priceUsd: 100, deliverable: "dataset-v2" });
 
-// Probe a cold counterparty domain ($0.00) and send a $0.00 pre-filing mediation invite
-const discovery = await discoverRespondent("vendor.example", {
-  platformDid: process.env.AGENT_MEDIATE_PLATFORM_DID,
-});
+// Probe a cold counterparty domain ($0.00, including verified /v1/honours/:domain standing) and send a $0.00 invite
+const discovery = await client.discoverRespondent("vendor.example");
 const invite = await client.createInvite({
   contractHash: hash,
   summary: "SLA downtime refund request for order ord_42",

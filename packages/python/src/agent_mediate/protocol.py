@@ -61,6 +61,31 @@ _PARAM_RE = re.compile(r';([a-z]+)=("[^"\\]*"|\d+)')
 _SIGNATURE_RE = re.compile(r"^sig1=:([A-Za-z0-9+/]+={0,2}):$")
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_HAS_CTL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+_HAS_WS_OR_CTL_RE = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+def _trim_ows(s: str) -> str:
+    return re.sub(r"^[ \t]+|[ \t]+$", "", s)
+
+
+def _parse_sig_params(raw_params: str) -> Dict[str, Any]:
+    params: Dict[str, str] = {}
+    for pm in _PARAM_RE.finditer(raw_params):
+        pkey, pval = pm.group(1), pm.group(2)
+        if pkey in params:
+            return {"ok": False, "reason": f"duplicate parameter {pkey}"}
+        if pkey not in ("created", "keyid", "alg", "nonce", "tag"):
+            return {"ok": False, "reason": f"unsupported parameter {pkey}"}
+        if pkey == "created":
+            if pval.startswith('"') or not pval.isdigit():
+                return {"ok": False, "reason": "created must be an unquoted RFC 8941 integer"}
+            params[pkey] = pval
+        else:
+            if not (pval.startswith('"') and pval.endswith('"')):
+                return {"ok": False, "reason": f"parameter {pkey} must be an RFC 8941 quoted string"}
+            params[pkey] = pval[1:-1]
+    return {"ok": True, "params": params}
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -79,16 +104,17 @@ def _is_valid_now_ms(now_ms: Any) -> bool:
 def _normalize_expected_base_url(raw: Any) -> Optional[str]:
     if not isinstance(raw, str):
         return None
-    trimmed = raw.rstrip("/")
-    if not trimmed:
+    trimmed = raw.strip()
+    if not trimmed or re.search(r"[\x00-\x20\x7f\\]", trimmed):
         return None
     try:
         parsed = urlsplit(trimmed)
-        _ = parsed.port
+        port = parsed.port
     except ValueError:
         return None
+    scheme = parsed.scheme.lower()
     if (
-        parsed.scheme not in ("http", "https")
+        scheme not in ("http", "https")
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
@@ -96,7 +122,20 @@ def _normalize_expected_base_url(raw: Any) -> Optional[str]:
         or parsed.fragment != ""
     ):
         return None
-    return trimmed
+    raw_host = parsed.hostname
+    if ":" in raw_host:
+        try:
+            addr = ipaddress.ip_address(raw_host)
+        except ValueError:
+            return None
+        host_str = f"[{addr.compressed}]"
+    else:
+        host_str = raw_host.lower()
+    default_port = 443 if scheme == "https" else 80
+    netloc = host_str if (port is None or port == default_port) else f"{host_str}:{port}"
+    clean_path = "" if parsed.path in ("", "/") else parsed.path.rstrip("/")
+    normalized = f"{scheme}://{netloc}{clean_path}"
+    return "https://api.ai-agents-mediation.com" if normalized == "https://ai-agents-mediation.com" else normalized
 
 
 def content_digest(body: str | bytes) -> str:
@@ -115,16 +154,21 @@ def _signature_base(
     lines: List[str] = []
     for comp in components:
         if comp == "@method":
-            val: Optional[str] = method.upper()
-        elif comp == "@target-uri":
-            val = target_uri
-        else:
-            val = lookup(comp)
+            if not isinstance(method, str) or not re.fullmatch(r"[A-Za-z]+", method):
+                raise ValueError("@method must be an ASCII HTTP method token")
+            lines.append(f'"@method": {method.upper()}')
+            continue
+        if comp == "@target-uri":
+            if not isinstance(target_uri, str) or len(target_uri) == 0 or _HAS_WS_OR_CTL_RE.search(target_uri):
+                raise ValueError("@target-uri must not contain whitespace or control characters")
+            lines.append(f'"@target-uri": {target_uri}')
+            continue
+        val = lookup(comp)
         if val is None:
             raise ValueError(f"covered header {comp} is missing")
-        if "\r" in val or "\n" in val:
-            raise ValueError(f"covered header {comp} contains a newline")
-        lines.append(f'"{comp}": {val.strip()}')
+        if _HAS_CTL_RE.search(val):
+            raise ValueError(f"covered header {comp} contains control characters")
+        lines.append(f'"{comp}": {_trim_ows(val)}')
     lines.append(f'"@signature-params": {signature_params}')
     return "\n".join(lines)
 
@@ -185,21 +229,19 @@ def verify_request(
     sig_header = lower.get("signature")
     if not sig_input or not sig_header:
         return {"ok": False, "reason": "missing Signature-Input or Signature header"}
+    if _HAS_CTL_RE.search(sig_input) or _HAS_CTL_RE.search(sig_header):
+        return {"ok": False, "reason": "Signature-Input or Signature contains control characters"}
+    clean_sig_input = _trim_ows(sig_input)
+    clean_sig_header = _trim_ows(sig_header)
 
-    m = _SIG_INPUT_RE.fullmatch(sig_input.strip())
+    m = _SIG_INPUT_RE.fullmatch(clean_sig_input)
     if not m:
         return {"ok": False, "reason": "malformed Signature-Input (expected a single sig1 entry)"}
     components = [c[1:-1] for c in m.group(1).split(" ")] if m.group(1) else []
-    params: Dict[str, str] = {}
-    for pm in _PARAM_RE.finditer(m.group(2)):
-        pkey, pval = pm.group(1), pm.group(2)
-        if pkey in params:
-            return {"ok": False, "reason": f"duplicate parameter {pkey}"}
-        params[pkey] = pval[1:-1] if pval.startswith('"') else pval
-
-    for pkey in params:
-        if pkey not in ("created", "keyid", "alg", "nonce", "tag"):
-            return {"ok": False, "reason": f"unsupported parameter {pkey}"}
+    parsed_params = _parse_sig_params(m.group(2))
+    if not parsed_params.get("ok"):
+        return parsed_params
+    params: Dict[str, str] = parsed_params["params"]
 
     tag = params.get("tag")
     if tag != expect_tag:
@@ -222,13 +264,15 @@ def verify_request(
     if "content-digest" in lower and "content-digest" not in components:
         return {"ok": False, "reason": "content-digest must be covered when present"}
     if "content-digest" in components:
-        if (lower.get("content-digest") or "").strip() != content_digest(body):
+        raw_cd = lower.get("content-digest")
+        if raw_cd is None or _HAS_CTL_RE.search(raw_cd) or _trim_ows(raw_cd) != content_digest(body):
             return {"ok": False, "reason": "content-digest does not match body"}
 
     if "idempotency-key" in lower and "idempotency-key" not in components:
         return {"ok": False, "reason": "idempotency-key must be covered when present"}
     if "idempotency-key" in components:
-        if len((lower.get("idempotency-key") or "").strip()) == 0:
+        raw_ik = lower.get("idempotency-key")
+        if raw_ik is None or _HAS_CTL_RE.search(raw_ik) or len(_trim_ows(raw_ik)) == 0:
             return {"ok": False, "reason": "covered idempotency-key must be non-empty"}
 
     if params.get("alg") != "ed25519":
@@ -254,10 +298,10 @@ def verify_request(
     if not is_did_key(keyid):
         return {"ok": False, "reason": "keyid must be an Ed25519 did:key"}
 
-    sm = _SIGNATURE_RE.fullmatch(sig_header.strip())
+    sm = _SIGNATURE_RE.fullmatch(clean_sig_header)
     if not sm:
         return {"ok": False, "reason": "malformed Signature header"}
-    sig_params = sig_input.strip()[len("sig1=") :]
+    sig_params = clean_sig_input[len("sig1=") :]
     try:
         base = _signature_base(components, method, target_uri, lambda n: lower.get(n), sig_params)
     except ValueError as err:
@@ -268,10 +312,10 @@ def verify_request(
     proof: Dict[str, Any] = {
         "method": method.upper(),
         "targetUri": target_uri,
-        "contentDigest": lower["content-digest"].strip() if "content-digest" in components and "content-digest" in lower else None,
-        "idempotencyKey": lower["idempotency-key"].strip() if "idempotency-key" in components and "idempotency-key" in lower else None,
-        "signatureInput": sig_input.strip(),
-        "signature": sig_header.strip(),
+        "contentDigest": _trim_ows(lower["content-digest"]) if "content-digest" in components and "content-digest" in lower else None,
+        "idempotencyKey": _trim_ows(lower["idempotency-key"]) if "idempotency-key" in components and "idempotency-key" in lower else None,
+        "signatureInput": clean_sig_input,
+        "signature": clean_sig_header,
         "created": created,
         "nonce": nonce,
         "keyid": keyid,
@@ -289,6 +333,7 @@ def verify_dispute_action_target(
     expected_dispute_id: str,
     expected_action: str,
     expected_base_url: Optional[str] = None,
+    expected_round: Optional[int] = None,
 ) -> Dict[str, Any]:
     if not isinstance(proof, Mapping):
         return {"ok": False, "reason": "invalid proof object"}
@@ -298,6 +343,8 @@ def verify_dispute_action_target(
     target_uri = proof.get("targetUri")
     if not isinstance(method, str) or not isinstance(target_uri, str):
         return {"ok": False, "reason": "invalid proof method or targetUri"}
+    if _HAS_WS_OR_CTL_RE.search(method) or _HAS_WS_OR_CTL_RE.search(target_uri):
+        return {"ok": False, "reason": "proof method or targetUri contains whitespace or control characters"}
     if method.upper() != "POST":
         return {"ok": False, "reason": f"dispute action proof method must be POST, got {method}"}
 
@@ -351,6 +398,14 @@ def verify_dispute_action_target(
         round_seg = path_part[len(rounds_prefix) : -len("/offer")]
         if not re.fullmatch(r"^[1-9][0-9]*$", round_seg):
             return {"ok": False, "reason": "submit_offer round segment invalid"}
+        round_num = int(round_seg)
+        if round_num > _MAX_SAFE_INT:
+            return {"ok": False, "reason": "submit_offer round segment invalid"}
+        if expected_round is not None:
+            if isinstance(expected_round, bool) or not isinstance(expected_round, int) or expected_round < 1 or expected_round > _MAX_SAFE_INT:
+                return {"ok": False, "reason": "expected_round must be a positive integer"}
+            if round_num != expected_round:
+                return {"ok": False, "reason": f"submit_offer round mismatch (expected {expected_round}, got {round_num})"}
         return {"ok": True}
     expected_path = exact_map.get(expected_action)
     if expected_path is None:
@@ -385,6 +440,7 @@ def verify_request_proof(
     expected_base_url: Optional[str] = None,
     expected_dispute_id: Optional[str] = None,
     expected_action: Optional[str] = None,
+    expected_round: Optional[int] = None,
     expect_tag: Optional[str] = None,
     expected_content_digest: Optional[str] = None,
     expected_idempotency_key: Optional[str] = None,
@@ -393,16 +449,20 @@ def verify_request_proof(
         return {"ok": False, "reason": "invalid proof object"}
     if not isinstance(proof.get("method"), str) or not isinstance(proof.get("targetUri"), str):
         return {"ok": False, "reason": "invalid method or targetUri"}
+    if _HAS_WS_OR_CTL_RE.search(proof["method"]) or _HAS_WS_OR_CTL_RE.search(proof["targetUri"]):
+        return {"ok": False, "reason": "proof method or targetUri contains whitespace or control characters"}
     if (
         not isinstance(proof.get("signatureInput"), str)
         or not isinstance(proof.get("signature"), str)
         or not isinstance(proof.get("keyid"), str)
     ):
         return {"ok": False, "reason": "invalid signatureInput, signature or keyid"}
+    if _HAS_CTL_RE.search(proof["signatureInput"]) or _HAS_CTL_RE.search(proof["signature"]):
+        return {"ok": False, "reason": "signatureInput or signature contains control characters"}
     for opt_str_field in ("contentDigest", "idempotencyKey"):
         if opt_str_field not in proof:
             return {"ok": False, "reason": f"missing {opt_str_field} field"}
-        if proof[opt_str_field] is not None and not isinstance(proof[opt_str_field], str):
+        if proof[opt_str_field] is not None and (not isinstance(proof[opt_str_field], str) or _HAS_CTL_RE.search(proof[opt_str_field])):
             return {"ok": False, "reason": f"invalid {opt_str_field}"}
     if expected_agent_id is not None and proof.get("keyid") != expected_agent_id:
         return {"ok": False, "reason": "proof keyid does not match expected agentId"}
@@ -414,6 +474,7 @@ def verify_request_proof(
             expected_dispute_id=expected_dispute_id,
             expected_action=expected_action,
             expected_base_url=expected_base_url,
+            expected_round=expected_round,
         )
         if not target_ok.get("ok"):
             return target_ok
@@ -428,28 +489,22 @@ def verify_request_proof(
 
     if expected_content_digest is not None:
         actual_cd = proof.get("contentDigest")
-        if not isinstance(actual_cd, str) or actual_cd.strip() != expected_content_digest.strip():
+        if not isinstance(actual_cd, str) or _trim_ows(actual_cd) != _trim_ows(expected_content_digest):
             return {"ok": False, "reason": "proof contentDigest does not match expected_content_digest"}
     if expected_idempotency_key is not None:
         actual_ik = proof.get("idempotencyKey")
-        if not isinstance(actual_ik, str) or actual_ik.strip() != expected_idempotency_key.strip():
+        if not isinstance(actual_ik, str) or _trim_ows(actual_ik) != _trim_ows(expected_idempotency_key):
             return {"ok": False, "reason": "proof idempotencyKey does not match expected_idempotency_key"}
 
-    sig_input = proof["signatureInput"].strip()
+    sig_input = _trim_ows(proof["signatureInput"])
     m = _SIG_INPUT_RE.fullmatch(sig_input)
     if not m:
         return {"ok": False, "reason": "malformed Signature-Input"}
     components = [c[1:-1] for c in m.group(1).split(" ")] if m.group(1) else []
-    params: Dict[str, str] = {}
-    for pm in _PARAM_RE.finditer(m.group(2)):
-        pkey, pval = pm.group(1), pm.group(2)
-        if pkey in params:
-            return {"ok": False, "reason": f"duplicate parameter {pkey}"}
-        params[pkey] = pval[1:-1] if pval.startswith('"') else pval
-
-    for pkey in params:
-        if pkey not in ("created", "keyid", "alg", "nonce", "tag"):
-            return {"ok": False, "reason": f"unsupported parameter {pkey}"}
+    parsed_params = _parse_sig_params(m.group(2))
+    if not parsed_params.get("ok"):
+        return parsed_params
+    params: Dict[str, str] = parsed_params["params"]
     tag = params.get("tag")
     if tag != expect_tag:
         if expect_tag:
@@ -468,18 +523,18 @@ def verify_request_proof(
     raw_digest = proof.get("contentDigest")
     c_digest: Optional[str] = None
     if "content-digest" in components:
-        if not isinstance(raw_digest, str) or not re.fullmatch(r"^sha-256=:[A-Za-z0-9+/]+={0,2}:$", raw_digest.strip()):
+        if not isinstance(raw_digest, str) or not re.fullmatch(r"^sha-256=:[A-Za-z0-9+/]+={0,2}:$", _trim_ows(raw_digest)):
             return {"ok": False, "reason": "invalid covered content-digest"}
-        c_digest = raw_digest.strip()
+        c_digest = _trim_ows(raw_digest)
     elif raw_digest is not None:
         return {"ok": False, "reason": "contentDigest must be null when not covered"}
 
     raw_idem = proof.get("idempotencyKey")
     idem_key: Optional[str] = None
     if "idempotency-key" in components:
-        if not isinstance(raw_idem, str) or len(raw_idem.strip()) == 0:
+        if not isinstance(raw_idem, str) or len(_trim_ows(raw_idem)) == 0:
             return {"ok": False, "reason": "invalid covered idempotency-key"}
-        idem_key = raw_idem.strip()
+        idem_key = _trim_ows(raw_idem)
     elif raw_idem is not None:
         return {"ok": False, "reason": "idempotencyKey must be null when not covered"}
 
@@ -506,7 +561,7 @@ def verify_request_proof(
     if proof.get("keyid") != keyid or not is_did_key(keyid):
         return {"ok": False, "reason": "keyid mismatch"}
 
-    sig_header = str(proof.get("signature") or "").strip()
+    sig_header = _trim_ows(str(proof.get("signature") or ""))
     sm = _SIGNATURE_RE.fullmatch(sig_header)
     if not sm:
         return {"ok": False, "reason": "malformed Signature"}
@@ -850,7 +905,13 @@ def verify_key_history(
                 or from_vf > _MAX_SAFE_INT
                 or (
                     from_has_vu
-                    and (not isinstance(from_vu, int) or isinstance(from_vu, bool) or from_vu < from_vf or from_vu > _MAX_SAFE_INT)
+                    and (
+                        not isinstance(from_vu, int)
+                        or isinstance(from_vu, bool)
+                        or from_vu < from_vf
+                        or from_vu > _MAX_SAFE_INT
+                        or rot_at > from_vu
+                    )
                 )
                 or rot_at < from_vf
             ):
@@ -1139,7 +1200,8 @@ def validate_issues_against_clause_templates(
             issue.get("claimantPrefers") != tmpl.get("claimantPrefers")
             or issue.get("obligor") != tmpl.get("obligor")
             or issue.get("unit") != tmpl.get("unit")
-            or abs(i_step - float(tmpl["step"])) > 1e-12
+            or i_step != float(tmpl["step"])
+            or _is_exact_int_number(issue.get("min")) != _is_exact_int_number(tmpl.get("min"))
         ):
             return {
                 "ok": False,
@@ -1382,24 +1444,23 @@ def verify_clause(
     issued_at = clause.get("issuedAt")
     if not isinstance(issued_at, int) or isinstance(issued_at, bool) or issued_at <= 0 or issued_at > _MAX_SAFE_INT:
         return {"ok": False, "reason": "clause.issuedAt must be a positive safe integer"}
-    if expected_platform_did is not None and platform.get("did") != expected_platform_did:
-        if key_history is not None:
-            vh = verify_key_history(key_history, expected_active_did=expected_platform_did, now_ms=now_ms)
-            if not vh.get("ok"):
-                return {"ok": False, "reason": f"clause.platform.did key history invalid: {vh.get('reason')}"}
-            hist_keys = key_history["document"]["keys"]
-            hist_key = next((k for k in hist_keys if isinstance(k, Mapping) and k.get("did") == platform.get("did")), None)
-            if (
-                hist_key is None
-                or hist_key.get("status") != "retired"
-                or "revokedAt" in hist_key
-                or "compromisedAfter" in hist_key
-                or issued_at < int(hist_key["validFrom"])
-                or ("validUntil" in hist_key and issued_at > int(hist_key["validUntil"]))
-            ):
-                return {"ok": False, "reason": "clause.platform.did does not match this platform"}
-        else:
+    if key_history is not None:
+        vh = verify_key_history(key_history, expected_active_did=expected_platform_did, now_ms=now_ms)
+        if not vh.get("ok"):
+            return {"ok": False, "reason": f"clause.platform.did key history invalid: {vh.get('reason')}"}
+        hist_keys = key_history["document"]["keys"]
+        hist_key = next((k for k in hist_keys if isinstance(k, Mapping) and k.get("did") == platform.get("did")), None)
+        if (
+            hist_key is None
+            or hist_key.get("status") not in ("active", "retired")
+            or "revokedAt" in hist_key
+            or "compromisedAfter" in hist_key
+            or issued_at < int(hist_key["validFrom"])
+            or ("validUntil" in hist_key and issued_at > int(hist_key["validUntil"]))
+        ):
             return {"ok": False, "reason": "clause.platform.did does not match this platform"}
+    elif expected_platform_did is not None and platform.get("did") != expected_platform_did:
+        return {"ok": False, "reason": "clause.platform.did does not match this platform"}
     if "rulesHash" in platform:
         p_rules_hash = platform["rulesHash"]
         if not isinstance(p_rules_hash, str) or not _SHA256_HEX_RE.fullmatch(p_rules_hash):
@@ -1751,6 +1812,7 @@ def did_web_document_authorizes_key(doc: Mapping[str, Any], expected_did_web: st
             return False
         if not isinstance(expected_did_web, str) or not expected_did_web.startswith("did:web:"):
             return False
+        url_from_did_web(expected_did_web)
         raw_public_key_from_did_key(expected_did_key)
         if doc.get("id") != expected_did_web:
             return False
@@ -1775,6 +1837,10 @@ def did_web_document_authorizes_key(doc: Mapping[str, Any], expected_did_web: st
             has_jwk = "publicKeyJwk" in vm and vm.get("publicKeyJwk") is not None
             has_mb = "publicKeyMultibase" in vm and vm.get("publicKeyMultibase") is not None
             if not has_jwk and not has_mb:
+                return False
+            if vm_type == "JsonWebKey2020" and not has_jwk:
+                return False
+            if vm_type == "Multikey" and not has_mb:
                 return False
             if has_jwk:
                 jwk = vm.get("publicKeyJwk")
@@ -1804,14 +1870,26 @@ def did_web_document_authorizes_key(doc: Mapping[str, Any], expected_did_web: st
                     return False
                 methods_by_id[norm_id] = vm
 
+        inline_ids: set[str] = set()
+        matched_auth = False
         for entry in auth:
             if isinstance(entry, str) and len(entry) > 0:
                 resolved = methods_by_id.get(normalize_id(entry))
                 if resolved is not None and method_matches(resolved):
-                    return True
-            elif method_matches(entry):
-                return True
-        return False
+                    matched_auth = True
+            elif isinstance(entry, Mapping) and not isinstance(entry, (list, tuple)):
+                vm_id = entry.get("id")
+                if not isinstance(vm_id, str) or len(vm_id) == 0:
+                    return False
+                norm_id = normalize_id(vm_id)
+                if norm_id in methods_by_id or norm_id in inline_ids:
+                    return False
+                inline_ids.add(norm_id)
+                if method_matches(entry):
+                    matched_auth = True
+            else:
+                return False
+        return matched_auth
     except Exception:
         return False
 
@@ -1821,7 +1899,7 @@ def verify_agent_card_signature(card: Mapping[str, Any], expected_did_key: str) 
         if not isinstance(card, Mapping) or isinstance(card, (list, tuple)):
             return False
         sigs = card.get("signatures")
-        if not isinstance(sigs, list) or len(sigs) == 0:
+        if not isinstance(sigs, list) or len(sigs) == 0 or len(sigs) > 16:
             return False
         pub = raw_public_key_from_did_key(expected_did_key)
         unsigned = {k: v for k, v in card.items() if k != "signatures"}

@@ -29,10 +29,14 @@ def _parse_jcs_int(token: str) -> int | float:
     return fv
 
 
+def _reject_jcs_constant(token: str) -> Any:
+    raise ValueError(f"Non-standard JSON constant {token!r} is rejected by RFC 8785 / RFC 8259")
+
+
 def loads_jcs_json(raw: str | bytes) -> Any:
     """Parse JSON per RFC 8785 §3.1 / ECMAScript JSON.parse (mapping integers outside safe-int range to IEEE-754 float)."""
     text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-    return json.loads(text, parse_int=_parse_jcs_int)
+    return json.loads(text, parse_int=_parse_jcs_int, parse_constant=_reject_jcs_constant)
 
 _ESCAPE_MAP = {
     0x08: "\\b",

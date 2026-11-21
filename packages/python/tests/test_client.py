@@ -339,7 +339,7 @@ class PythonClientAndPayerTests(unittest.TestCase):
         )
 
         # 1. PR-L8: exported __version__, compute_terms_hash, compute_outcome_hash
-        self.assertEqual(am.__version__, "0.1.1")
+        self.assertEqual(am.__version__, "0.1.2")
         terms_h = compute_terms_hash({"refundUsd": 420})
         self.assertEqual(len(terms_h), 64)
         outcome_h = compute_outcome_hash(
@@ -1178,6 +1178,399 @@ class PythonClientAndPayerTests(unittest.TestCase):
         with self.assertRaises(AgentMediateError) as rev_err:
             revoked_client.platform()
         self.assertEqual(rev_err.exception.code, "PLATFORM_DID_MISMATCH")
+
+    def test_batch2_v0_1_2_python_sdk_and_protocol_regressions(self) -> None:
+        """H-04, H-05, M-09a, M-09c, M-11a, L-08, L-09: Python v0.1.2 parity regressions."""
+        from agent_mediate import (
+            DISPUTE_NOTICE_TYPE,
+            KEY_HISTORY_TYPE,
+            PaymentPolicyError,
+            RULES_HASH,
+            RULES_VERSION,
+            build_clause,
+            discover_respondent,
+            ed25519_public_jwk_from_did_key,
+            loads_jcs_json,
+            sign_agent_card,
+            sign_clause,
+            sign_document,
+            sign_key_rotation,
+            sign_mandate,
+            sign_request,
+            validate_issues_against_clause_templates,
+            verify_agent_card_signature,
+            verify_clause,
+            verify_dispute_action_target,
+            verify_key_history,
+            verify_request,
+        )
+
+        # L-08: loads_jcs_json rejects NaN / Infinity / -Infinity
+        for non_json in ("NaN", "Infinity", "-Infinity", '{"x":NaN}'):
+            with self.assertRaises(ValueError):
+                loads_jcs_json(non_json)
+
+        k_old = generate_agent_key()
+        k_new = generate_agent_key()
+        claimant = generate_agent_key()
+        respondent = generate_agent_key()
+        t0 = 1_800_000_000_000
+        pay_to = "0x1111111111111111111111111111111111111111"
+
+        rot = sign_key_rotation(
+            base_url="https://api.mediate.example",
+            from_key=k_old,
+            to_did=k_new.did,
+            rotated_at_ms=t0 + 1_000,
+        )
+        kh_rotated = sign_document(
+            {
+                "type": KEY_HISTORY_TYPE,
+                "platformDidWeb": "did:web:api.mediate.example",
+                "activeDid": k_new.did,
+                "activeKeyId": f"{k_new.did}#key-1",
+                "updatedAt": t0 + 1_000,
+                "keys": [
+                    {
+                        "keyId": f"{k_new.did}#key-1",
+                        "did": k_new.did,
+                        "publicKeyJwk": ed25519_public_jwk_from_did_key(k_new.did),
+                        "status": "active",
+                        "validFrom": t0 + 1_000,
+                    },
+                    {
+                        "keyId": f"{k_old.did}#key-1",
+                        "did": k_old.did,
+                        "publicKeyJwk": ed25519_public_jwk_from_did_key(k_old.did),
+                        "status": "retired",
+                        "validFrom": t0 - 86_400_000,
+                        "validUntil": t0 + 1_000,
+                    },
+                ],
+                "rotations": [rot],
+            },
+            k_new,
+            key_id=f"{k_new.did}#key-1",
+            created_ms=t0 + 1_000,
+            expires_at_ms=t0 + 601_000,
+        )
+        card_new = sign_agent_card(
+            {
+                "name": "Agent-Mediate",
+                "url": "https://api.mediate.example",
+                "provider": {"organization": "Agent-Mediate", "url": "https://api.mediate.example"},
+                "capabilities": {
+                    "extensions": [
+                        {"uri": "urn:agent-mediate:ext:rest-api:v1", "params": {"baseUrl": "https://api.mediate.example"}},
+                        {"uri": "urn:agent-mediate:ext:x402-fees:v1", "params": {"payTo": pay_to}},
+                    ]
+                },
+            },
+            k_new,
+            kid="did:web:api.mediate.example#key-1",
+        )
+        challenge_b64 = base64.b64encode(
+            json.dumps(
+                {"x402Version": 2, "accepts": [{"scheme": "exact", "network": "eip155:84532", "amount": "2000000", "payTo": pay_to}]}
+            ).encode("utf-8")
+        ).decode("ascii")
+
+        released: list[str] = []
+        mode = {"v": "ok"}
+
+        class _MockPayer:
+            network = "eip155:84532"
+
+            def pay(self, challenge: object, *, operation: str, expected_pay_to: str | None = None) -> str:
+                self.last_pay_to = expected_pay_to
+                return f"py-pay-{mode['v']}"
+
+            def release_unsettled(self, sig: str) -> None:
+                released.append(sig)
+
+        def paid_transport(method: str, url: str, headers: dict[str, str], body: bytes | None) -> HttpResponse:
+            if url.endswith("/v1/platform"):
+                return HttpResponse(
+                    200,
+                    {"content-type": "application/json"},
+                    json.dumps(
+                        {
+                            "did": k_new.did,
+                            "rulesVersion": RULES_VERSION,
+                            "rulesHash": RULES_HASH,
+                            "fees": {"payTo": pay_to, "network": "eip155:84532", "fullFeeAtomic": "2000000"},
+                        }
+                    ),
+                )
+            if url.endswith("/.well-known/key-history.json"):
+                return HttpResponse(200, {"content-type": "application/json"}, json.dumps(kh_rotated))
+            if url.endswith("/.well-known/agent-card.json"):
+                return HttpResponse(200, {"content-type": "application/json"}, json.dumps(card_new))
+            if url.endswith("/v1/disputes"):
+                if "payment-signature" not in headers:
+                    return HttpResponse(
+                        402,
+                        {"content-type": "application/json", "payment-required": challenge_b64},
+                        json.dumps({"code": "PAYMENT_REQUIRED"}),
+                    )
+                if mode["v"] == "reject_402":
+                    return HttpResponse(402, {"content-type": "application/json"}, json.dumps({"code": "INVALID_PAYMENT", "detail": "bad"}))
+                if mode["v"] == "ambiguous_503":
+                    return HttpResponse(503, {"content-type": "application/json"}, json.dumps({"code": "FACILITATOR_UNAVAILABLE"}))
+                notice = sign_document(
+                    {
+                        "type": DISPUTE_NOTICE_TYPE,
+                        "disputeId": "dsp_py_rot_1",
+                        "environment": "production",
+                        "rulesVersion": RULES_VERSION,
+                        "rulesHash": RULES_HASH,
+                        "claimantId": claimant.did,
+                        "respondentId": respondent.did,
+                        "contractHash": "a" * 64,
+                        "feeMode": "FILER_PAYS",
+                        "respondentJoinFeeUsd": "0.00",
+                        "joinDeadline": t0 + 86_400_000,
+                        "noticeUrl": "https://api.mediate.example/n/tok_py_1",
+                        "issuedAt": t0 + 5_000,
+                    },
+                    k_new,
+                    created_ms=t0 + 5_000,
+                    expires_at_ms=t0 + 86_400_000,
+                )
+                return HttpResponse(
+                    201,
+                    {"content-type": "application/json"},
+                    json.dumps(
+                        {
+                            "disputeId": "dsp_py_rot_1",
+                            "view": {"status": "AWAITING_RESPONDENT"},
+                            "notice": {
+                                "token": "tok_py_1",
+                                "noticeUrl": "https://api.mediate.example/n/tok_py_1",
+                                "signedNotice": notice,
+                                "delivery": {"delivered": False, "attempts": []},
+                            },
+                        }
+                    ),
+                )
+            return HttpResponse(404, {}, "not found")
+
+        def make_client() -> AgentMediateClient:
+            return AgentMediateClient(
+                base_url="https://api.mediate.example",
+                agent_key=claimant,
+                platform_did=k_old.did,
+                expected_environment="production",
+                payer=_MockPayer(),
+                now_ms=lambda: t0 + 5_000,
+                max_retries=0,
+                transport=paid_transport,
+            )
+
+        file_args = dict(
+            respondent_id=respondent.did,
+            contract_hash="a" * 64,
+            claim={"summary": "SLA", "requestedRemedy": "Credit"},
+            proposed_issues=[
+                {
+                    "id": "creditUsd",
+                    "label": "Credit",
+                    "unit": "USD",
+                    "min": 0,
+                    "max": 500,
+                    "step": 25,
+                    "claimantPrefers": "higher",
+                    "obligor": "respondent",
+                }
+            ],
+            bounds={"creditUsd": {"min": 0, "max": 500}},
+        )
+
+        # H-04: Paid file_dispute succeeds after K_old -> K_new rotation
+        res_ok = make_client().file_dispute(**file_args, idempotency_key="py-rot-ok")
+        self.assertEqual(res_ok["disputeId"], "dsp_py_rot_1")
+        self.assertEqual(released, [])
+
+        # H-05: Definitive 402 INVALID_PAYMENT sets payment_sent=False and calls release_unsettled
+        mode["v"] = "reject_402"
+        with self.assertRaises(AgentMediateError) as rej_ctx:
+            make_client().file_dispute(**file_args, idempotency_key="py-rej-402")
+        self.assertEqual(rej_ctx.exception.code, "INVALID_PAYMENT")
+        self.assertFalse(rej_ctx.exception.payment_sent)
+        self.assertEqual(released, ["py-pay-reject_402"])
+
+        # H-05: Ambiguous 503 FACILITATOR_UNAVAILABLE keeps payment_sent=True and does NOT release
+        mode["v"] = "ambiguous_503"
+        with self.assertRaises(AgentMediateError) as amb_ctx:
+            make_client().file_dispute(**file_args, idempotency_key="py-amb-503")
+        self.assertTrue(amb_ctx.exception.payment_sent)
+        self.assertEqual(released, ["py-pay-reject_402"])
+
+        # M-09a: Bare signed mandate dict passed as bounds raises ValueError
+        bare_mnd = sign_mandate(
+            {
+                "id": "mnd_py_bare",
+                "principalId": claimant.did,
+                "agentId": claimant.did,
+                "bounds": {"creditUsd": {"min": 0, "max": 500}},
+                "issuedAt": t0,
+                "expiresAt": t0 + 86_400_000,
+            },
+            claimant,
+        )
+        with self.assertRaises(ValueError):
+            make_client().confirm_issues("dsp_1", "b" * 64, bounds=bare_mnd)  # type: ignore[arg-type]
+
+        # M-09c & L-08: discover_respondent JSON-RPC binding & cross-origin Agent Card suppression
+        jrpc_card = sign_agent_card(
+            {"name": "Vendor", "supportedInterfaces": [{"url": "https://vendor.example/a2a", "protocolBinding": "JSON-RPC"}]},
+            respondent,
+            kid=respondent.did,
+        )
+        disc_jrpc = discover_respondent(
+            "vendor.example",
+            resolve_host=lambda _h: ["93.184.216.34"],
+            transport=lambda _m, u, _h, _b: (
+                HttpResponse(200, {"content-type": "application/json"}, json.dumps(jrpc_card))
+                if u == "https://vendor.example/.well-known/agent-card.json"
+                else HttpResponse(404, {}, "")
+            ),
+        )
+        self.assertEqual(disc_jrpc["respondentId"], respondent.did)
+        self.assertTrue(disc_jrpc["hasVerifiedNoticeChannel"])
+
+        disc_foreign = discover_respondent(
+            "cold.example",
+            resolve_host=lambda _h: ["93.184.216.34"],
+            transport=lambda _m, u, _h, _b: (
+                HttpResponse(
+                    200,
+                    {"content-type": "application/json"},
+                    json.dumps(
+                        {
+                            "name": "Foreign",
+                            "url": "https://evil.example/a2a",
+                            "provider": {"url": "https://evil.example", "email": "evil@evil.example"},
+                        }
+                    ),
+                )
+                if u == "https://cold.example/.well-known/agent-card.json"
+                else HttpResponse(200, {"content-type": "text/plain"}, "Contact: mailto:security@cold.example\n")
+                if u == "https://cold.example/.well-known/security.txt"
+                else HttpResponse(404, {}, "")
+            ),
+        )
+        self.assertNotIn("a2aCardUrl", disc_foreign["respondentContact"])
+        self.assertEqual(disc_foreign["respondentContact"].get("email"), "security@cold.example")
+        self.assertEqual(disc_foreign["sources"], ["security_txt"])
+
+        # M-11a: verify_clause forward rotation & revocation + verify_key_history rotatedAt > validUntil
+        clause_old = sign_clause(
+            sign_clause(
+                build_clause(
+                    contract_hash_hex="c" * 64,
+                    platform_did=k_old.did,
+                    platform_base_url="https://api.mediate.example",
+                    rules_hash=RULES_HASH,
+                    issued_at=t0 - 10_000,
+                    parties=[{"agentId": claimant.did}, {"agentId": respondent.did}],
+                ),
+                claimant,
+            ),
+            respondent,
+        )
+        self.assertTrue(
+            verify_clause(clause_old, expected_platform_did=k_old.did, key_history=kh_rotated, now_ms=t0 + 5_000)["ok"]
+        )
+        kh_late = sign_document(
+            {
+                **kh_rotated["document"],
+                "keys": [
+                    kh_rotated["document"]["keys"][0],
+                    {**kh_rotated["document"]["keys"][1], "validUntil": t0 + 500},
+                ],
+            },
+            k_new,
+            key_id=f"{k_new.did}#key-1",
+            created_ms=t0 + 1_000,
+            expires_at_ms=t0 + 601_000,
+        )
+        self.assertFalse(verify_key_history(kh_late, expected_active_did=k_old.did, now_ms=t0 + 5_000)["ok"])
+
+        # L-09: @target-uri trailing whitespace, expected_round, exact step, and >16 card signatures
+        hdrs = {
+            "content-type": "application/json",
+            **sign_request(
+                method="POST",
+                target_uri="https://api.mediate.example/v1/disputes/dsp_1/rounds/2/offer",
+                headers={"content-type": "application/json"},
+                body="{}",
+                key=claimant,
+                created=t0 // 1000,
+                nonce="py-b2-nonce-00001",
+            ),
+        }
+        self.assertFalse(
+            verify_request(
+                method="POST",
+                target_uri="https://api.mediate.example/v1/disputes/dsp_1/rounds/2/offer ",
+                headers=hdrs,
+                body="{}",
+                now_ms=t0,
+            )["ok"]
+        )
+        self.assertTrue(
+            verify_dispute_action_target(
+                {"method": "POST", "targetUri": "https://api.mediate.example/v1/disputes/dsp_1/rounds/2/offer"},
+                expected_base_url="https://api.mediate.example",
+                expected_dispute_id="dsp_1",
+                expected_action="submit_offer",
+                expected_round=2,
+            )["ok"]
+        )
+        self.assertFalse(
+            verify_dispute_action_target(
+                {"method": "POST", "targetUri": "https://api.mediate.example/v1/disputes/dsp_1/rounds/2/offer"},
+                expected_base_url="https://api.mediate.example",
+                expected_dispute_id="dsp_1",
+                expected_action="submit_offer",
+                expected_round=1,
+            )["ok"]
+        )
+        self.assertFalse(
+            validate_issues_against_clause_templates(
+                [
+                    {
+                        "id": "creditUsd",
+                        "label": "Credit",
+                        "unit": "USD",
+                        "min": 0,
+                        "max": 100,
+                        "step": 1.0000000000000002,
+                        "claimantPrefers": "higher",
+                        "obligor": "respondent",
+                    }
+                ],
+                [
+                    {
+                        "id": "creditUsd",
+                        "label": "Credit",
+                        "unit": "USD",
+                        "min": 0,
+                        "max": 100,
+                        "step": 1,
+                        "claimantPrefers": "higher",
+                        "obligor": "respondent",
+                    }
+                ],
+            )["ok"]
+        )
+        self.assertFalse(
+            verify_agent_card_signature(
+                {"name": "Flooded", "signatures": [{"protected": "e30", "signature": "AA"}] * 17},
+                k_new.did,
+            )
+        )
 
 
 if __name__ == "__main__":

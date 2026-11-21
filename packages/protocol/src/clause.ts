@@ -456,7 +456,8 @@ export function validateIssuesAgainstClauseTemplates(
       issue.claimantPrefers !== tmpl.claimantPrefers ||
       issue.obligor !== tmpl.obligor ||
       issue.unit !== tmpl.unit ||
-      Math.abs(issue.step - tmpl.step) > 1e-12
+      issue.step !== tmpl.step ||
+      Number.isInteger(issue.min) !== Number.isInteger(tmpl.min)
     ) {
       return {
         ok: false,
@@ -524,29 +525,27 @@ export function verifyClause(clause: DisputeClause, opts: VerifyClauseOptions = 
   if (!Number.isSafeInteger(clause.issuedAt) || clause.issuedAt <= 0) {
     return { ok: false, reason: "clause.issuedAt must be a positive integer" };
   }
-  if (opts.expectedPlatformDid !== undefined && clause.platform.did !== opts.expectedPlatformDid) {
-    if (opts.keyHistory !== undefined) {
-      const vh = verifyKeyHistory(opts.keyHistory, {
-        expectedActiveDid: opts.expectedPlatformDid,
-        ...(opts.now !== undefined ? { now: opts.now } : {}),
-      });
-      if (!vh.ok) {
-        return { ok: false, reason: `clause.platform.did key history invalid: ${vh.reason}` };
-      }
-      const histKey = opts.keyHistory.document.keys.find((k) => k.did === clause.platform.did);
-      if (
-        !histKey ||
-        histKey.status !== "retired" ||
-        histKey.revokedAt !== undefined ||
-        histKey.compromisedAfter !== undefined ||
-        clause.issuedAt < histKey.validFrom ||
-        (histKey.validUntil !== undefined && clause.issuedAt > histKey.validUntil)
-      ) {
-        return { ok: false, reason: "clause.platform.did does not match this platform" };
-      }
-    } else {
+  if (opts.keyHistory !== undefined) {
+    const vh = verifyKeyHistory(opts.keyHistory, {
+      ...(opts.expectedPlatformDid !== undefined ? { expectedActiveDid: opts.expectedPlatformDid } : {}),
+      ...(opts.now !== undefined ? { now: opts.now } : {}),
+    });
+    if (!vh.ok) {
+      return { ok: false, reason: `clause.platform.did key history invalid: ${vh.reason}` };
+    }
+    const histKey = opts.keyHistory.document.keys.find((k) => k.did === clause.platform.did);
+    if (
+      !histKey ||
+      (histKey.status !== "active" && histKey.status !== "retired") ||
+      histKey.revokedAt !== undefined ||
+      histKey.compromisedAfter !== undefined ||
+      clause.issuedAt < histKey.validFrom ||
+      (histKey.validUntil !== undefined && clause.issuedAt > histKey.validUntil)
+    ) {
       return { ok: false, reason: "clause.platform.did does not match this platform" };
     }
+  } else if (opts.expectedPlatformDid !== undefined && clause.platform.did !== opts.expectedPlatformDid) {
+    return { ok: false, reason: "clause.platform.did does not match this platform" };
   }
   if (clause.platform.rulesHash !== undefined) {
     if (typeof clause.platform.rulesHash !== "string" || !SHA256_HEX.test(clause.platform.rulesHash)) {

@@ -709,22 +709,36 @@ function counterpartySecrets(state: DisputeState, recipient: Party): Array<{ val
 }
 
 const NUMBER_PATTERN = /-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi;
-const SEPARATORS = /[\s"'(){}[\]<>,;:|]+/;
+const SEPARATORS = /[\s"'(){}[\]<>,;:|*`]+/;
+const COMPOUND_UNIT_SUFFIX = "(?:\\/?[A-Za-z%$€£¥]{1,12}(?:\\/[A-Za-z]{1,12})?)";
 
 /**
  * Numbers a reader would see in text. Identifier-like tokens (8+ chars mixing
  * letters and digits: hashes, addresses, did:keys, signatures, ids) are skipped:
  * digit runs inside them are not quantities. Thousands separators, currency prefixes,
- * `~`/`≈` approximations, `key=value/unit` assignments, scientific notation, and numeric
- * ranges (`700-730`) are normalised first (`SA2-CORE-L1`).
+ * `~`/`≈` approximations, `key=value/unit` assignments, scientific notation, Markdown
+ * emphasis/code wrappers, and numeric ranges (`700-730`) are normalised first (`SA2-CORE-L1`).
  */
 function extractNumbers(text: string): Array<{ token: string; value: number }> {
   const out: Array<{ token: string; value: number }> = [];
+  const sciRe = new RegExp(`^(-?\\d+(?:\\.\\d+)?e[+-]?\\d+)${COMPOUND_UNIT_SUFFIX}?$`, "i");
+  const unitRe = new RegExp(`^(-?\\d+(?:\\.\\d+)?)${COMPOUND_UNIT_SUFFIX}$`);
+
+  // Also capture unprefixed comma-separated integer lists like "100,730" where a non-000 group follows `,`
+  // so canonical thousands collapsing does not hide secret values inside unspaced comma lists.
+  const listExtras: string[] = [];
+  for (const m of text.matchAll(/(?<![$€£¥.\dA-Za-z_])([1-9]\d{0,2}(?:,\d{3})+)(?![.\dA-Za-z_])/g)) {
+    const groups = m[1]!.split(",");
+    if (groups.slice(1).some((g) => g !== "000")) {
+      listExtras.push(...groups);
+    }
+  }
+
   const normalized = text
-    .replace(/(\d),(?=\d{3}(?!\d))/g, "$1")
+    .replace(/(?<![.\dA-Za-z_])([1-9]\d{0,2}(?:,\d{3})+)(?![\dA-Za-z_])/g, (s) => s.replace(/,/g, ""))
     .replace(/(\d)\s*[-\u2013\u2014]\s*(?=[~≈]?[A-Za-z]{0,3}[$€£¥]?\d)/g, "$1 ");
-  for (const rawTok of normalized.split(SEPARATORS)) {
-    const trimmedPunct = rawTok.replace(/[.!?]+$/, "");
+  for (const rawTok of [...normalized.split(SEPARATORS), ...listExtras]) {
+    const trimmedPunct = rawTok.replace(/^_+/, "").replace(/[_!.?]+$/, "");
     let subTokens: string[];
     const eqAssign = trimmedPunct.match(/^([A-Za-z_][A-Za-z0-9_-]*)=(.+)$/);
     if (eqAssign && !eqAssign[2]!.endsWith("=")) {
@@ -739,15 +753,16 @@ function extractNumbers(text: string): Array<{ token: string; value: number }> {
       else subTokens = [trimmedPunct];
     }
     for (const sub of subTokens) {
-      const approxStripped = sub.replace(/^[~≈]+/, "");
+      const cleanSub = sub.replace(/^_+/, "").replace(/_+$/, "");
+      const approxStripped = cleanSub.replace(/^[~≈]+/, "");
       const prefixStripped = approxStripped.replace(/^(?:[A-Z]{0,3}[$€£¥]|(?:USD|EUR|GBP|ZAR|USDC)(?=\d))/i, "");
-      const sciMatch = prefixStripped.match(/^(-?\d+(?:\.\d+)?e[+-]?\d+)(?:\/?[A-Za-z%$€£¥]{1,12})?$/i);
+      const sciMatch = prefixStripped.match(sciRe);
       if (sciMatch) {
         const num = Number(sciMatch[1]);
         if (Number.isFinite(num)) out.push({ token: sciMatch[1]!, value: num });
         continue;
       }
-      const unitMatch = prefixStripped.match(/^(-?\d+(?:\.\d+)?)(?:\/?[A-Za-z%$€£¥]{1,12})$/);
+      const unitMatch = prefixStripped.match(unitRe);
       const stripped = unitMatch && !/^[0-9a-f]{8,}$/i.test(prefixStripped) ? unitMatch[1]! : prefixStripped;
       if (stripped.length >= 8 && /[A-Za-z]/.test(stripped) && /\d/.test(stripped)) continue;
       for (const m of stripped.matchAll(NUMBER_PATTERN)) {

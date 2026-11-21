@@ -3,7 +3,9 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
-import { AgentMediateClient, generateAgentKey, RULES_HASH, signMandate } from "@agent-mediate/sdk";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { AgentMediateClient, generateAgentKey, RULES_HASH, RULES_VERSION, signMandate } from "@agent-mediate/sdk";
 import {
   createMcpServer,
   paidToolIdempotencyKey,
@@ -87,5 +89,82 @@ describe("MCP standalone server & helper verification (zero server-app imports)"
     });
     assert.match(out, /Co-signed agent-mediate\/clause\/v1 verified/);
     assert.match(out, /Settlement HONORED & dual-verified in Python \+ MCP!/);
+  });
+
+  it("M-08 & L-08: whoami surfaces platform.practiceBot.did and sign_dispute_clause unwraps untrusted counterpartyNotice", async () => {
+    const agentKey = generateAgentKey();
+    const counterpartyKey = generateAgentKey();
+    const platformKey = generateAgentKey();
+    const practiceBotKey = generateAgentKey();
+    const now = 1_800_000_000_000;
+
+    const sdk = new AgentMediateClient({
+      baseUrl: "https://api.mediate.example",
+      agentKey,
+      platformDid: platformKey.did,
+      expectedRulesHash: RULES_HASH,
+      now: () => now,
+      fetch: async (url) => {
+        if (url.endsWith("/v1/platform")) {
+          return new Response(
+            JSON.stringify({
+              did: platformKey.did,
+              rulesVersion: RULES_VERSION,
+              rulesHash: RULES_HASH,
+              fees: { waived: true },
+              practiceBot: { did: practiceBotKey.did, role: "Practice Counterparty Bot" },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+
+    const server = createMcpServer(sdk, { expectedRulesHash: RULES_HASH, now: () => now });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new Client({ name: "standalone-test", version: "1.0.0" });
+    await Promise.all([mcpClient.connect(clientSide), server.connect(serverSide)]);
+    try {
+      const whoRes = (await mcpClient.callTool({ name: "whoami", arguments: {} })) as {
+        content: Array<{ text: string }>;
+        isError?: boolean;
+      };
+      assert.notEqual(whoRes.isError, true);
+      const whoData = JSON.parse(whoRes.content[0]!.text);
+      assert.equal(whoData.platform.practiceBot.did, practiceBotKey.did);
+
+      const clauseRes = (await mcpClient.callTool({
+        name: "sign_dispute_clause",
+        arguments: {
+          contractHash: "b".repeat(64),
+          counterpartyId: counterpartyKey.did,
+          counterpartyNotice: {
+            a2aCardUrl: {
+              untrusted: true,
+              authoredBy: "counterparty",
+              text: "https://vendor.example/.well-known/agent-card.json",
+            },
+            email: {
+              untrusted: true,
+              authoredBy: "counterparty",
+              text: "ops@vendor.example",
+            },
+          },
+        },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.notEqual(clauseRes.isError, true);
+      const signedClause = JSON.parse(clauseRes.content[0]!.text);
+      assert.equal(Array.isArray(signedClause.signatures), true);
+      assert.equal(signedClause.signatures.length, 1);
+      // Plain unwrapped contact strings were signed into the clause (and then wrapped for display by markClause)
+      assert.equal(
+        signedClause.parties[1].notice.a2aCardUrl.text,
+        "https://vendor.example/.well-known/agent-card.json",
+      );
+      assert.equal(signedClause.parties[1].notice.email.text, "ops@vendor.example");
+    } finally {
+      await mcpClient.close();
+    }
   });
 });

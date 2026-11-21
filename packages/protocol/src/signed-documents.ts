@@ -347,8 +347,15 @@ export function buildSignedKeyHistory(opts: {
     if (!allEntries.some((e) => e.did === rdoc.toDid)) {
       throw new Error(`rotation endorsement toDid ${rdoc.toDid} must reference a key entry in key history`);
     }
-    if (!Number.isSafeInteger(rdoc.rotatedAt) || rdoc.rotatedAt < fromEntry.validFrom || rdoc.rotatedAt > opts.updatedAt) {
-      throw new Error(`rotation endorsement rotatedAt for ${rdoc.fromDid} must lie within [${fromEntry.validFrom}, ${opts.updatedAt}]`);
+    if (
+      !Number.isSafeInteger(rdoc.rotatedAt) ||
+      rdoc.rotatedAt < fromEntry.validFrom ||
+      (fromEntry.validUntil !== undefined && rdoc.rotatedAt > fromEntry.validUntil) ||
+      rdoc.rotatedAt > opts.updatedAt
+    ) {
+      throw new Error(
+        `rotation endorsement rotatedAt for ${rdoc.fromDid} must lie within [${fromEntry.validFrom}, ${fromEntry.validUntil ?? opts.updatedAt}]`,
+      );
     }
     if (rot.proof?.created !== rdoc.rotatedAt || !verifyDocument(rot, rdoc.fromDid, { expectedKeyId: fromEntry.keyId })) {
       throw new Error(`rotation endorsement signature for ${rdoc.fromDid} -> ${rdoc.toDid} is invalid`);
@@ -534,7 +541,7 @@ export function verifyKeyHistory(
         fromEntry.compromisedAfter !== undefined ||
         !Number.isSafeInteger(fromEntry.validFrom) ||
         fromEntry.validFrom <= 0 ||
-        (fromEntry.validUntil !== undefined && (!Number.isSafeInteger(fromEntry.validUntil) || fromEntry.validUntil < fromEntry.validFrom)) ||
+        (fromEntry.validUntil !== undefined && (!Number.isSafeInteger(fromEntry.validUntil) || fromEntry.validUntil < fromEntry.validFrom || rdoc.rotatedAt > fromEntry.validUntil)) ||
         rdoc.rotatedAt < fromEntry.validFrom
       ) {
         return { ok: false, reason: "key history rotation endorsement references non-retired or invalid key" };

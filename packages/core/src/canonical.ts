@@ -17,7 +17,16 @@ export function canonicalJson(value: unknown): string {
   }
   if (typeof value === "string") return JSON.stringify(value);
   if (Array.isArray(value)) {
-    return `[${value.map((item) => (item === undefined ? "null" : canonicalJson(item))).join(",")}]`;
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Array.prototype) {
+      throw new TypeError(`Non-plain array cannot be canonicalized: ${proto?.constructor?.name ?? "Array"}`);
+    }
+    const parts: string[] = [];
+    for (let i = 0; i < value.length; i++) {
+      const item = value[i];
+      parts.push(item === undefined ? "null" : canonicalJson(item));
+    }
+    return `[${parts.join(",")}]`;
   }
   if (typeof value === "object") {
     const proto = Object.getPrototypeOf(value);

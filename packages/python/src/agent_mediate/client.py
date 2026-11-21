@@ -234,6 +234,11 @@ def _is_ip_host(host: str) -> bool:
         return False
 
 
+def _assert_not_bare_mandate_bounds(bounds: Optional[Mapping[str, Any]]) -> None:
+    if isinstance(bounds, Mapping) and ("signature" in bounds or "principalId" in bounds):
+        raise ValueError("pass mandate=..., not a bare Mandate dict as bounds")
+
+
 def _merge_prior_determination_bounds(
     *,
     bounds: Optional[Mapping[str, Mapping[str, float]]],
@@ -1238,6 +1243,7 @@ class AgentMediateClient:
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """File a dispute. Keep ``config["feeMode"] == "FILER_PAYS"`` (the default) for cold respondents so joining costs $0.00 and zero crypto setup."""
+        _assert_not_bare_mandate_bounds(bounds)
         key = idempotency_key or f"pysdk-{uuid.uuid4()}"
         scope = {"contractHash": contract_hash, "counterpartyId": respondent_id}
         fp = (
@@ -1560,6 +1566,7 @@ class AgentMediateClient:
         windows: Optional[Mapping[str, int]] = None,
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
+        _assert_not_bare_mandate_bounds(bounds)
         key = idempotency_key or f"pysdk-{uuid.uuid4()}"
         scope = self._scope_of(dispute_id, idempotency_key=f"join:{key}") if (bounds is not None and mandate is None) else None
         resolved_mandate = self._resolve_mandate(
@@ -1617,6 +1624,7 @@ class AgentMediateClient:
         key = idempotency_key or f"pysdk-{uuid.uuid4()}"
         body: Dict[str, Any] = {"issuesHash": issues_hash}
         if mandate is not None or bounds is not None:
+            _assert_not_bare_mandate_bounds(bounds)
             ctx = self._mandate_context_of(dispute_id, idempotency_key=f"confirm:{key}") if (bounds is not None and mandate is None) else None
             effective_consent, effective_det_bounds = _merge_prior_determination_bounds(
                 bounds=bounds,
@@ -1664,6 +1672,7 @@ class AgentMediateClient:
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Monotonically widen your principal-signed mandate during BARGAINING or DETERMINATION (v1.2.0/v1.3.0)."""
+        _assert_not_bare_mandate_bounds(bounds)
         key = idempotency_key or f"pysdk-{uuid.uuid4()}"
         ctx = self._mandate_context_of(dispute_id, idempotency_key=f"update:{key}") if (bounds is not None and mandate is None) else None
         effective_consent, effective_det_bounds = _merge_prior_determination_bounds(
@@ -2260,6 +2269,8 @@ class AgentMediateClient:
                 raise ValueError("determination_bounds must be signed inside mandate.determinationBounds when providing a pre-signed mandate")
             return dict(mandate)
         if bounds is not None:
+            if isinstance(bounds, Mapping) and ("signature" in bounds or "principalId" in bounds):
+                raise ValueError("pass mandate=..., not a bare Mandate dict as bounds")
             now = self._now_ms()
             fingerprint = self._mandate_fingerprint(
                 bounds=bounds,
@@ -2337,14 +2348,25 @@ class AgentMediateClient:
             return None
         with self._pending_lock:
             cached_pay_to = self._verified_pay_to
+            verified_active = self._verified_active_platform_did
         if cached_pay_to is not None and cached_pay_to.lower() == raw_pay_to.lower():
             return cached_pay_to
-        expected_did = self._pinned_platform_did or str(info.get("did") or "")
+        expected_did = verified_active or self._pinned_platform_did or str(info.get("did") or "")
         try:
             card = self._get_public("/.well-known/agent-card.json", error_detail="could not read /.well-known/agent-card.json")
         except AgentMediateError as err:
             raise PaymentPolicyError(f"could not verify /.well-known/agent-card.json for payTo: {err}") from err
-        if not verify_agent_card_signature(card, expected_did):
+        sig_ok = verify_agent_card_signature(card, expected_did)
+        if not sig_ok and self._pinned_platform_did:
+            try:
+                hist = self.key_history(force=True)
+                hist_active = ((hist.get("document") or {}).get("activeDid")) if isinstance(hist, Mapping) else None
+                if isinstance(hist_active, str) and hist_active != expected_did:
+                    expected_did = hist_active
+                    sig_ok = verify_agent_card_signature(card, expected_did)
+            except Exception:
+                sig_ok = False
+        if not sig_ok:
             raise PaymentPolicyError("/.well-known/agent-card.json failed platform signature verification")
         norm_base = self.base_url.rstrip("/")
 
@@ -2452,17 +2474,22 @@ class AgentMediateClient:
         raw_bytes = raw_str.encode("utf-8") if raw_str else None
 
         def fail(status: int, code: str, message: str, err_body: Any = None) -> AgentMediateError:
-            # CR3-PY-M1 & CR3-SDK-M3: 422 RESPONDENT_UNREACHABLE aborts before x402 settlement ($0.00 charged);
-            # mark payment_sent=False and release the authorization so its budget reclaims after validBefore + 60s.
-            unsettled_abort = code == "RESPONDENT_UNREACHABLE"
-            if unsettled_abort and payment_sig is not None and self._payer is not None:
+            # H-05: Only ambiguous transport/facilitator failures may have settled a payment in flight.
+            # Definitive rejections (402 invalid payment, 400/404/409/410/422, redirects) never settled ($0.00 charged):
+            # report payment_sent=False, clear _pending_paid, and release the unsettled EIP-3009 authorization.
+            retain_pending = (
+                payment_sig is not None
+                and code != "RESPONDENT_UNREACHABLE"
+                and (status == 0 or status == 429 or status >= 500 or code in _AMBIGUOUS_PAYMENT_CODES)
+            )
+            paid = retain_pending
+            if payment_sig is not None and not retain_pending and self._payer is not None:
                 release_fn = getattr(self._payer, "release_unsettled", None)
                 if callable(release_fn):
                     release_fn(payment_sig)
-            paid = payment_sig is not None and not unsettled_abort
             if pending_key is not None:
                 with self._pending_lock:
-                    if paid and (status == 0 or status == 429 or status >= 500 or code in _AMBIGUOUS_PAYMENT_CODES):
+                    if retain_pending:
                         if pending_key not in self._pending_paid and len(self._pending_paid) >= _PENDING_PAID_MAX:
                             self._pending_paid.pop(next(iter(self._pending_paid)), None)
                         existing = self._pending_paid.get(pending_key)
@@ -2785,6 +2812,7 @@ def _pinned_socket_get_bounded(
     for idx, pin in enumerate(candidates):
         conn: Optional[http.client.HTTPConnection] = None
         sock: Optional[socket.socket] = None
+        raw_sock: Optional[socket.socket] = None
         received_headers = False
         try:
             if pin is not None:
@@ -2833,6 +2861,11 @@ def _pinned_socket_get_bounded(
             elif sock is not None:
                 try:
                     sock.close()
+                except Exception:
+                    pass
+            elif raw_sock is not None:
+                try:
+                    raw_sock.close()
                 except Exception:
                     pass
     return None
@@ -2941,12 +2974,12 @@ def _extract_did_candidates_from_card(
     return candidates
 
 
-def _agent_card_matches_origin(
+def _inspect_agent_card_origin_claims(
     card: Mapping[str, Any],
     expected_origin: str,
     allowed_did_webs: set[str],
     has_custom_same_origin_webhook: bool,
-) -> bool:
+) -> tuple[bool, bool]:
     has_positive_claim = has_custom_same_origin_webhook
 
     def same_origin_url(raw: Any) -> bool:
@@ -2954,23 +2987,23 @@ def _agent_card_matches_origin(
 
     if "url" in card and card.get("url") is not None:
         if not same_origin_url(card.get("url")):
-            return False
+            return True, False
         has_positive_claim = True
     if "supportedInterfaces" in card and card.get("supportedInterfaces") is not None:
         ifaces = card.get("supportedInterfaces")
         if not isinstance(ifaces, list):
-            return False
+            return True, False
         for iface in ifaces:
             if not isinstance(iface, Mapping):
-                return False
+                return True, False
             if "url" in iface and iface.get("url") is not None:
                 if not same_origin_url(iface.get("url")):
-                    return False
+                    return True, False
                 has_positive_claim = True
     provider = card.get("provider")
     if isinstance(provider, Mapping) and "url" in provider and provider.get("url") is not None:
         if not same_origin_url(provider.get("url")):
-            return False
+            return True, False
         has_positive_claim = True
     sigs = card.get("signatures")
     if isinstance(sigs, list):
@@ -2982,20 +3015,35 @@ def _agent_card_matches_origin(
                 pad = "=" * ((4 - (len(prot) % 4)) % 4)
                 hdr = json.loads(base64.urlsafe_b64decode(prot + pad).decode("utf-8"))
                 if not isinstance(hdr, Mapping):
-                    return False
+                    return True, False
                 if "jku" in hdr and hdr.get("jku") is not None:
                     if not same_origin_url(hdr.get("jku")):
-                        return False
+                        return True, False
                     has_positive_claim = True
                 kid = hdr.get("kid")
                 if isinstance(kid, str) and kid.startswith("did:web:"):
                     kid_did_web = kid.split("#", 1)[0]
                     if kid_did_web not in allowed_did_webs:
-                        return False
+                        return True, False
                     has_positive_claim = True
             except Exception:
-                return False
-    return has_positive_claim
+                return True, False
+    return False, has_positive_claim
+
+
+def _agent_card_matches_origin(
+    card: Mapping[str, Any],
+    expected_origin: str,
+    allowed_did_webs: set[str],
+    has_custom_same_origin_webhook: bool,
+) -> bool:
+    has_foreign, has_positive = _inspect_agent_card_origin_claims(
+        card, expected_origin, allowed_did_webs, has_custom_same_origin_webhook
+    )
+    return (not has_foreign) and has_positive
+
+
+_STANDARD_A2A_JSONRPC_BINDINGS = frozenset({"JSONRPC", "JSON-RPC", "HTTP+JSONRPC"})
 
 
 def _extract_standard_a2a_rpc_url(card: Mapping[str, Any], expected_origin: str) -> Optional[str]:
@@ -3005,13 +3053,13 @@ def _extract_standard_a2a_rpc_url(card: Mapping[str, Any], expected_origin: str)
             if not isinstance(iface, Mapping) or not isinstance(iface.get("url"), str):
                 continue
             binding = str(iface.get("protocolBinding") or "JSONRPC").strip().upper()
-            if binding not in ("JSONRPC", "HTTP+JSONRPC"):
+            if binding not in _STANDARD_A2A_JSONRPC_BINDINGS:
                 continue
             if _origin_of_url(iface["url"]) == expected_origin:
                 return iface["url"]
     if isinstance(card.get("url"), str):
         transport = str(card.get("preferredTransport") or "JSONRPC").strip().upper()
-        if transport in ("JSONRPC", "HTTP+JSONRPC") and _origin_of_url(card["url"]) == expected_origin:
+        if transport in _STANDARD_A2A_JSONRPC_BINDINGS and _origin_of_url(card["url"]) == expected_origin:
             return card["url"]
     return None
 
@@ -3188,8 +3236,20 @@ def discover_respondent(
             except Exception:
                 pass
 
+    try:
+        root_did_web: Optional[str] = did_web_from_url(origin)
+    except Exception:
+        root_did_web = None
+    expected_did_web = initial_did_web or root_did_web
+    allowed_did_webs: set[str] = set()
+    if root_did_web:
+        allowed_did_webs.add(root_did_web)
+    if initial_did_web:
+        allowed_did_webs.add(initial_did_web)
+
     # 2. A2A Agent Card (/.well-known/agent-card.json -> /.well-known/agent.json -> Link header on /)
     card_url: Optional[str] = f"{origin}/.well-known/agent-card.json"
+    card_from_link_header = False
     card_res = get_from_target(card_url, "application/json")
     if card_res is None:
         card_url = f"{origin}/.well-known/agent.json"
@@ -3201,30 +3261,22 @@ def discover_respondent(
             card_res = get_from_target(linked, "application/json")
             if card_res is not None:
                 card_url = linked
-                add_source("link_header")
+                card_from_link_header = True
 
     parsed_card: Optional[Dict[str, Any]] = None
     if card_res is not None and card_url is not None:
         try:
             c = json.loads(card_res.body)
-            if isinstance(c, dict):
+            if isinstance(c, dict) and not _inspect_agent_card_origin_claims(c, origin, allowed_did_webs, False)[0]:
                 parsed_card = c
+                if card_from_link_header:
+                    add_source("link_header")
                 contact["a2aCardUrl"] = card_url
                 add_source("a2a_card")
         except Exception:
             pass
 
     # 3. W3C did:web (/.well-known/did.json or path-scoped did_doc_url)
-    try:
-        root_did_web: Optional[str] = did_web_from_url(origin)
-    except Exception:
-        root_did_web = None
-    expected_did_web = initial_did_web or root_did_web
-    allowed_did_webs: set[str] = set()
-    if root_did_web:
-        allowed_did_webs.add(root_did_web)
-    if initial_did_web:
-        allowed_did_webs.add(initial_did_web)
 
     did_doc_authorized_keys: List[str] = []
     did_doc_method_by_id: Dict[str, str] = {}
@@ -3275,7 +3327,7 @@ def discover_respondent(
                                 if linked_card is not None:
                                     try:
                                         c = json.loads(linked_card.body)
-                                        if isinstance(c, dict):
+                                        if isinstance(c, dict) and not _inspect_agent_card_origin_claims(c, origin, allowed_did_webs, False)[0]:
                                             parsed_card = c
                                             contact["a2aCardUrl"] = ep
                                             add_source("a2a_card")

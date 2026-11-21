@@ -260,6 +260,7 @@ export function didWebDocumentAuthorizesKey(
   try {
     if (!doc || typeof doc !== "object" || Array.isArray(doc)) return false;
     if (typeof expectedDidWeb !== "string" || !expectedDidWeb.startsWith("did:web:")) return false;
+    urlFromDidWeb(expectedDidWeb);
     // Validate canonical Ed25519 did:key and small-order rejection.
     publicKeyFromDidKey(expectedDidKey);
     if (doc.id !== expectedDidWeb) return false;
@@ -277,6 +278,8 @@ export function didWebDocumentAuthorizesKey(
       const hasJwk = obj.publicKeyJwk !== undefined;
       const hasMultibase = obj.publicKeyMultibase !== undefined;
       if (!hasJwk && !hasMultibase) return false;
+      if (obj.type === "JsonWebKey2020" && !hasJwk) return false;
+      if (obj.type === "Multikey" && !hasMultibase) return false;
       if (hasJwk) {
         if (!obj.publicKeyJwk || typeof obj.publicKeyJwk !== "object" || Array.isArray(obj.publicKeyJwk)) {
           return false;
@@ -309,15 +312,24 @@ export function didWebDocumentAuthorizesKey(
       }
     }
 
+    const inlineIds = new Set<string>();
+    let matchedAuth = false;
     for (const entry of doc.authentication) {
       if (typeof entry === "string" && entry.length > 0) {
         const resolved = methodsById.get(normalizeMethodId(entry));
-        if (resolved && methodMatchesKey(resolved)) return true;
-      } else if (methodMatchesKey(entry)) {
-        return true;
+        if (resolved && methodMatchesKey(resolved)) matchedAuth = true;
+      } else if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        const obj = entry as Record<string, unknown>;
+        if (typeof obj.id !== "string" || obj.id.length === 0) return false;
+        const normId = normalizeMethodId(obj.id);
+        if (methodsById.has(normId) || inlineIds.has(normId)) return false;
+        inlineIds.add(normId);
+        if (methodMatchesKey(obj)) matchedAuth = true;
+      } else {
+        return false;
       }
     }
-    return false;
+    return matchedAuth;
   } catch {
     return false;
   }
@@ -393,7 +405,7 @@ export function signAgentCard<T extends Record<string, unknown>>(
  */
 export function verifyAgentCardSignature(card: Record<string, unknown>, expectedDidKey: string): boolean {
   try {
-    if (!card || typeof card !== "object" || !Array.isArray(card.signatures) || card.signatures.length === 0) {
+    if (!card || typeof card !== "object" || !Array.isArray(card.signatures) || card.signatures.length === 0 || card.signatures.length > 16) {
       return false;
     }
     const pubKey = publicKeyFromDidKey(expectedDidKey);
