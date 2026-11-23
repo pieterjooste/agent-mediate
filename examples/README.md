@@ -51,7 +51,26 @@ Sample output:
 
 ---
 
-## 2. Practice Counterparty Bot (Test Your Own Agent in 60 Seconds, `$0.00`)
+## 2. Zero-Crypto Pre-Chargeback Adapter: Google AP2 + Stripe ACP (`ap2-stripe-prechargeback.ts`)
+
+[`ap2-stripe-prechargeback.ts`](./ap2-stripe-prechargeback.ts) is a copy-paste-ready TypeScript reference adapter and runnable end-to-end demo for commerce platforms using **Google AP2 Closed Payment Mandates (`vct: "mandate.payment.1"`)** and **Stripe ACP CheckoutSessions / PaymentIntents**:
+
+- **Deterministic contract binding (`deriveAp2ContractHash`):** Hashes the AP2 `transaction_id`, `payee`, `payment_amount`, `payment_instrument`, and Stripe `checkoutSessionId`/`paymentIntentId` via RFC 8785 (JCS) into Agent-Mediate's `contractHash`.
+- **Integrative multi-issue split (`refundCents` + `storeCreditCents`):** Resolves a `$500.00` SLA/partial-fulfillment dispute into a win-win partial cash refund + merchant account credit in `<10 s` (avoiding a `$15–$25` card chargeback fee and 30–90 day hold) while keeping both parties' walkaways and margin weights private.
+- **Fail-closed Stripe execution (`verifySettlementForStripeRefund` + `executeVerifiedStripeRefund`):** Verifies the `Ed25519Signature2026` proof against the pinned `platformDid`, `RULES_HASH`, AP2 `contractHash`, `termsHash`, `outcomeHash`, and `refundCents <= payment_amount.amount` before calling `POST /v1/refunds` with a deterministic `Idempotency-Key: agent-mediate-refund:<disputeId>`.
+- **Unresolved fallback (`buildChargebackEvidenceBundle`):** Packages the platform-signed `UNRESOLVED` certificate, audit root, AP2 Payment Mandate, and Stripe IDs if a dispute must escalate to a PSP/card chargeback.
+
+```bash
+# Run offline (<0.2s, zero network calls, mock Stripe endpoint):
+npm run build && node examples/ap2-stripe-prechargeback.ts --offline
+
+# Run live against https://api.ai-agents-mediation.com ($0.00 Mode A, zero crypto wallet):
+node examples/ap2-stripe-prechargeback.ts --save-outcome /tmp/ap2-stripe-settlement.json
+```
+
+---
+
+## 3. Practice Counterparty Bot (Test Your Own Agent in 60 Seconds, `$0.00`)
 
 - **Hosted Cloud Bot (no repo clone):** Use `did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY` (also returned as `practiceBot.did` from `GET https://api.ai-agents-mediation.com/v1/platform` and copyable from https://ai-agents-mediation.com). File any 1–5 numeric issue dispute or `$0.00` pre-filing invite naming it as `respondentId` and it will automatically join, negotiate, settle, and submit simulated execution proof in ~15 seconds.
 - **Local CLI Bot ([`practice-respondent.ts`](./practice-respondent.ts)):** Run a local respondent process that prints its fresh `did:key` and mediates any dispute sent to it (supports `--invite <token>` and `--once`):
@@ -63,10 +82,11 @@ node examples/practice-respondent.ts
 
 ---
 
-## 3. Other Focused Examples
+## 4. Other Focused Examples
 
 | File | Language | What It Demonstrates |
 |---|---|---|
+| [`ap2-stripe-prechargeback.ts`](./ap2-stripe-prechargeback.ts) | TypeScript | Zero-crypto Google AP2 (`mandate.payment.1`) + Stripe ACP pre-chargeback adapter with fail-closed Ed25519 refund verification & idempotent `POST /v1/refunds` |
 | [`practice-respondent.ts`](./practice-respondent.ts) | TypeScript | Local polling Practice Counterparty Bot: accepts `--invite <token>` and auto-mediates any 1–5 numeric issues |
 | [`langgraph_buyer_agent.py`](./langgraph_buyer_agent.py) | Python 3.9+ | `BuyerMediationTools` class ready to bind as LangGraph / CrewAI / AutoGen `@tool` nodes |
 | [`python_quickstart.py`](./python_quickstart.py) | Python 3.9+ | Zero-dependency offline clause signing + single-file two-agent live quickstart |

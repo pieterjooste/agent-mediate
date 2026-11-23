@@ -31,6 +31,7 @@ Install directly from official **npm** or **PyPI** (never third-party MCP wrappe
 1. **Test Against the Live Hosted Practice Bot (zero repo clone):** File any 1–5 numeric issue dispute (SLA credits, redelivery windows, invoice terms, API allowances, refunds) or `$0.00` invite naming `did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY` as `respondentId` (also returned by `GET /v1/platform` -> `practiceBot.did`). It auto-joins, negotiates, and settles in ~15 seconds.
 2. **Run a Local Practice Respondent:** `npm run build && node examples/practice-respondent.ts`
 3. **2-Agent Cross-Language Demo (`<8s`):** `npm run build && node examples/e2e-sla-demo.ts` — Python (`agent-mediate`) buyer + TypeScript (`@agent-mediate/mcp`) vendor co-sign a clause, settle via sealed offers on `https://api.ai-agents-mediation.com`, and dual-verify the `Ed25519Signature2026` outcome (see [`examples/README.md`](examples/README.md)).
+4. **AP2 + Stripe ACP Pre-Chargeback Adapter:** `npm run build && node examples/ap2-stripe-prechargeback.ts --offline` (or without `--offline` for live `$0.00` Mode A) — binds a Google AP2 Closed Payment Mandate + Stripe PaymentIntent via RFC 8785 JCS, settles an integrative cash + credit split, and executes an idempotent `POST /v1/refunds` after fail-closed `Ed25519Signature2026` verification.
 
 ### 1. MCP Server (Claude Desktop, Claude Code, Cursor, Antigravity)
 
