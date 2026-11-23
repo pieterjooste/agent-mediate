@@ -70,7 +70,26 @@ node examples/ap2-stripe-prechargeback.ts --save-outcome /tmp/ap2-stripe-settlem
 
 ---
 
-## 3. Practice Counterparty Bot (Test Your Own Agent in 60 Seconds, `$0.00`)
+## 3. x402r (`AuthCaptureEscrow`) + Coinbase AgentKit Adapter (`x402r-agentkit-escrow.ts`)
+
+[`x402r-agentkit-escrow.ts`](./x402r-agentkit-escrow.ts) is a copy-paste-ready TypeScript reference adapter and runnable end-to-end demo for **x402r refundable stablecoin escrows (`AuthCaptureEscrow`)** and **Coinbase AgentKit** wallets:
+
+- **Deterministic `PaymentInfo` binding (`validateX402rPaymentInfo` + `deriveX402rContractHash`):** Validates `preApprovalExpiry <= authorizationExpiry <= refundExpiry`, `0 <= minFeeBps <= maxFeeBps <= 10000`, valid EVM addresses, and `0 < capturedAmount <= maxAmount <= uint120`, then hashes the normalized `PaymentInfo` + `escrowAddress` + `captureTxHash` via RFC 8785 (JCS) into Agent-Mediate's `contractHash`.
+- **Integrative multi-issue split (`refundMicroUsdc` + `remediationHours`):** Replaces blunt `0% / 100%` binary slashing with a confidential partial USDC refund (6-decimal integer atomic units) paired with an SLA remediation window, without exposing either party's walkaways or weights.
+- **Fail-closed escrow split (`verifySettlementForX402rEscrow` + `executeVerifiedX402rSettlement`):** Verifies the `Ed25519Signature2026` proof against the pinned `platformDid`, `RULES_HASH`, `PaymentInfo` `contractHash`, `termsHash`, `outcomeHash`, `refundExpiry`, and BigInt balance conservation (`refundAmountAtomic + merchantReleaseAtomic === capturedAmountAtomic`) before invoking `refundInEscrow` and `releaseEscrow` idempotently.
+- **Zero-dependency Coinbase AgentKit `ActionProvider` (`createAgentKitX402rProvider`):** Exposes `mediate_x402r_escrow_dispute`, `verify_x402r_settlement_instruction`, and `settle_x402r_escrow_from_outcome` with EVM/Base network gating and wallet-to-`PaymentInfo.payer` binding checks.
+
+```bash
+# Run offline (<0.2s, zero network calls, simulated AuthCaptureEscrow):
+npm run build && node examples/x402r-agentkit-escrow.ts --offline
+
+# Run live against https://api.ai-agents-mediation.com ($0.00 Mode A, zero platform custody):
+node examples/x402r-agentkit-escrow.ts --save-outcome /tmp/x402r-escrow-settlement.json
+```
+
+---
+
+## 4. Practice Counterparty Bot (Test Your Own Agent in 60 Seconds, `$0.00`)
 
 - **Hosted Cloud Bot (no repo clone):** Use `did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY` (also returned as `practiceBot.did` from `GET https://api.ai-agents-mediation.com/v1/platform` and copyable from https://ai-agents-mediation.com). File any 1–5 numeric issue dispute or `$0.00` pre-filing invite naming it as `respondentId` and it will automatically join, negotiate, settle, and submit simulated execution proof in ~15 seconds.
 - **Local CLI Bot ([`practice-respondent.ts`](./practice-respondent.ts)):** Run a local respondent process that prints its fresh `did:key` and mediates any dispute sent to it (supports `--invite <token>` and `--once`):
@@ -82,11 +101,12 @@ node examples/practice-respondent.ts
 
 ---
 
-## 4. Other Focused Examples
+## 5. Other Focused Examples
 
 | File | Language | What It Demonstrates |
 |---|---|---|
 | [`ap2-stripe-prechargeback.ts`](./ap2-stripe-prechargeback.ts) | TypeScript | Zero-crypto Google AP2 (`mandate.payment.1`) + Stripe ACP pre-chargeback adapter with fail-closed Ed25519 refund verification & idempotent `POST /v1/refunds` |
+| [`x402r-agentkit-escrow.ts`](./x402r-agentkit-escrow.ts) | TypeScript | `x402r` `AuthCaptureEscrow` + Coinbase `AgentKit` `ActionProvider` adapter with fail-closed Ed25519 verification & atomic BigInt `refundInEscrow`/`releaseEscrow` splits |
 | [`practice-respondent.ts`](./practice-respondent.ts) | TypeScript | Local polling Practice Counterparty Bot: accepts `--invite <token>` and auto-mediates any 1–5 numeric issues |
 | [`langgraph_buyer_agent.py`](./langgraph_buyer_agent.py) | Python 3.9+ | `BuyerMediationTools` class ready to bind as LangGraph / CrewAI / AutoGen `@tool` nodes |
 | [`python_quickstart.py`](./python_quickstart.py) | Python 3.9+ | Zero-dependency offline clause signing + single-file two-agent live quickstart |

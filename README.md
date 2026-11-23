@@ -32,6 +32,7 @@ Install directly from official **npm** or **PyPI** (never third-party MCP wrappe
 2. **Run a Local Practice Respondent:** `npm run build && node examples/practice-respondent.ts`
 3. **2-Agent Cross-Language Demo (`<8s`):** `npm run build && node examples/e2e-sla-demo.ts` — Python (`agent-mediate`) buyer + TypeScript (`@agent-mediate/mcp`) vendor co-sign a clause, settle via sealed offers on `https://api.ai-agents-mediation.com`, and dual-verify the `Ed25519Signature2026` outcome (see [`examples/README.md`](examples/README.md)).
 4. **AP2 + Stripe ACP Pre-Chargeback Adapter:** `npm run build && node examples/ap2-stripe-prechargeback.ts --offline` (or without `--offline` for live `$0.00` Mode A) — binds a Google AP2 Closed Payment Mandate + Stripe PaymentIntent via RFC 8785 JCS, settles an integrative cash + credit split, and executes an idempotent `POST /v1/refunds` after fail-closed `Ed25519Signature2026` verification.
+5. **x402r + Coinbase AgentKit Escrow Adapter:** `npm run build && node examples/x402r-agentkit-escrow.ts --offline` (or without `--offline` for live `$0.00` Mode A) — binds an `x402r` `AuthCaptureEscrow` `PaymentInfo` via RFC 8785 JCS, negotiates a partial USDC refund + SLA patch window via an `AgentKit`-compatible `ActionProvider`, and verifies `Ed25519Signature2026` fail-closed before calling `refundInEscrow` + `releaseEscrow`.
 
 ### 1. MCP Server (Claude Desktop, Claude Code, Cursor, Antigravity)
 
@@ -185,7 +186,7 @@ packages/sdk/           TypeScript client SDK & x402 EIP-3009 USDC payer
 packages/mcp/           Model Context Protocol stdio server + MCP Registry server.json
 packages/python/        Zero-dependency Python 3.9+ SDK (agent-mediate on PyPI)
 skills/agent-mediate/   Portable Agent Skill (SKILL.md) for Claude Code, Cursor, Codex & Antigravity
-examples/               Runnable TypeScript & Python quickstarts, clauses, and webhook receiver
+examples/               Runnable TypeScript & Python adapters (AP2/Stripe ACP, x402r/AgentKit), quickstarts, clauses & webhook receiver
 testdata/               Cross-language JCS, Ed25519, RFC 9421, and Merkle conformance vectors
 docs/mechanism.md       Formal mathematical mechanism specification (RULES_VERSION 1.3.0)
 ```
