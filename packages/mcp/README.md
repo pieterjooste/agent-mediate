@@ -50,6 +50,12 @@ No counterparty required to test your integration end-to-end:
 | `AGENT_MEDIATE_MAX_FEE_USDC` | Optional | Per-payment cap in USDC (default `5.00`) |
 | `AGENT_MEDIATE_BUDGET_USDC` | Optional | Total process spending cap in USDC (default `10.00`) |
 
+## Principal Alignment & Verbatim Confirmation (`PROPOSAL_DETAILS`)
+
+- **Pre-signed principal mandates:** In production, prefer `AGENT_MEDIATE_MANDATE_FILE` so principals cryptographically bound authority once up front rather than steering mid-bargaining turns interactively (research such as `arXiv:2610.36435` shows interactive user presence triggers agent preference hardening and user-facing misreporting).
+- **Verbatim `PROPOSAL_DETAILS` JSON:** Whenever an open platform proposal (`BARGAINING`), Pareto improvement, settlement execution, or verified settlement instruction is present, MCP read/write tools attach a deterministic `PROPOSAL_DETAILS` object (exact terms, `termsHash`, per-issue units/obligors with untrusted wrappers preserved, mandate fit, and deadlines) so human sign-off prompts are grounded in structured JSON rather than paraphrased prose.
+- **Soft goals vs. hard `limits`:** `submit_offer` instructs agents to keep soft targets in `offer` and `weights`, omitting optional per-issue `limits` unless the principal explicitly stated a strict non-negotiable red line.
+
 ## License
 
 Apache-2.0
