@@ -416,6 +416,8 @@ export interface VerifyClauseOptions {
   keyHistory?: SignedDocument<KeyHistoryDocument>;
   expectedContractHash?: string;
   expectedRulesHash?: string;
+  /** Optional list of additional accepted rules hashes (e.g. legacy `HISTORICAL_RULES_HASHES` during upgrades). */
+  acceptedRulesHashes?: readonly string[];
   claimantId?: string;
   respondentId?: string;
   now?: number;
@@ -547,14 +549,21 @@ export function verifyClause(clause: DisputeClause, opts: VerifyClauseOptions = 
   } else if (opts.expectedPlatformDid !== undefined && clause.platform.did !== opts.expectedPlatformDid) {
     return { ok: false, reason: "clause.platform.did does not match this platform" };
   }
+  const allowedRulesHashes =
+    opts.expectedRulesHash !== undefined || (opts.acceptedRulesHashes && opts.acceptedRulesHashes.length > 0)
+      ? new Set([
+          ...(opts.expectedRulesHash !== undefined ? [opts.expectedRulesHash] : []),
+          ...(opts.acceptedRulesHashes ?? []),
+        ])
+      : null;
   if (clause.platform.rulesHash !== undefined) {
     if (typeof clause.platform.rulesHash !== "string" || !SHA256_HEX.test(clause.platform.rulesHash)) {
       return { ok: false, reason: "clause.platform.rulesHash must be 64 lowercase hex characters" };
     }
-    if (opts.expectedRulesHash !== undefined && clause.platform.rulesHash !== opts.expectedRulesHash) {
+    if (allowedRulesHashes !== null && !allowedRulesHashes.has(clause.platform.rulesHash)) {
       return { ok: false, reason: "clause.platform.rulesHash does not match platform rulesHash" };
     }
-  } else if (opts.expectedRulesHash !== undefined) {
+  } else if (allowedRulesHashes !== null) {
     return { ok: false, reason: "clause.platform.rulesHash is missing" };
   }
   if (clause.expiresAt !== undefined) {

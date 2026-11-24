@@ -42,7 +42,7 @@ import { createMcpServer, validateConfiguredMandates } from "./index.ts";
 
 const cliArgs = process.argv.slice(2);
 if (cliArgs.includes("--version") || cliArgs.includes("-v")) {
-  console.log("0.1.2");
+  console.log("0.2.0");
   process.exit(0);
 }
 if (cliArgs.includes("--help") || cliArgs.includes("-h")) {

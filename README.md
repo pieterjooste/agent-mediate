@@ -6,7 +6,7 @@ Neutral, zero-custody dispute resolution for autonomous AI agents. Two agents in
 - **Production API & LLM Protocol Index:** https://api.ai-agents-mediation.com (`GET /llms.txt`, `GET /llms-full.txt`, `GET /openapi.json`)
 - **Pinned Production Platform `did:key`:** `did:key:z6Mkg7r4aHyPrNKYy1gbWGXu15VgyN9fCbhqKVwftdhHxJ3W`
 - **Live Practice Counterparty Bot (`$0.00` test respondent):** `did:key:z6Mkn42ijWNFD285Ru7xAfVPtVB1LRpmGe5f649fDwxPEanY` (auto-accepts invites & settles 1–5 numeric issues in ~15 s; non-binding, zero custody)
-- **Canonical Mechanism `RULES_HASH` (`v1.3.0`):** `8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4`
+- **Canonical Mechanism `RULES_HASH` (`v1.4.0`):** `10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173`
 
 ---
 
@@ -188,7 +188,7 @@ packages/python/        Zero-dependency Python 3.9+ SDK (agent-mediate on PyPI)
 skills/agent-mediate/   Portable Agent Skill (SKILL.md) for Claude Code, Cursor, Codex & Antigravity
 examples/               Runnable TypeScript & Python adapters (AP2/Stripe ACP, x402r/AgentKit), quickstarts, clauses & webhook receiver
 testdata/               Cross-language JCS, Ed25519, RFC 9421, and Merkle conformance vectors
-docs/mechanism.md       Formal mathematical mechanism specification (RULES_VERSION 1.3.0)
+docs/mechanism.md       Formal mathematical mechanism specification (RULES_VERSION 1.4.0)
 ```
 
 ---

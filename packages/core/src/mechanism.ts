@@ -124,14 +124,33 @@ export function isOnGrid(issue: Issue, v: number): boolean {
   return Math.abs(idx - Math.round(idx)) <= gridTolerance(issue, v);
 }
 
-function snapIdxTolerance(issue: Issue, idx: number): number {
-  return Math.min(EPS, EPS / issue.step + 8 * Number.EPSILON * Math.max(1, Math.abs(idx)));
+/**
+ * Tolerance (in grid-index units) for `snap` (H-10): scales ULP noise by `(abs(v) + abs(min) + range) / step`
+ * and caps at 0.25 (matching `gridTolerance`) so exact on-grid fractional and large-step points never jump
+ * to an adjacent grid index under `floor` / `ceil`.
+ */
+function snapIdxTolerance(issue: Issue, v: number, idx: number): number {
+  const ulpIdx =
+    (16 * Number.EPSILON * (Math.abs(v) + Math.abs(issue.min) + range(issue))) / issue.step +
+    8 * Number.EPSILON * Math.max(1, Math.abs(idx));
+  const base = Number.isInteger(issue.min) && Number.isInteger(issue.step) ? EPS : Math.max(EPS, EPS / issue.step);
+  return Math.min(0.25, base + ulpIdx);
 }
 
 /** Snap a value to the issue grid. `nearest` rounds exact halves to the even grid index (unbiased). */
 export function snap(issue: Issue, v: number, mode: "floor" | "ceil" | "nearest"): number {
+  if (
+    Number.isInteger(issue.min) &&
+    Number.isInteger(issue.step) &&
+    Number.isSafeInteger(v) &&
+    v >= issue.min &&
+    v <= issue.max &&
+    (v - issue.min) % issue.step === 0
+  ) {
+    return v === 0 ? 0 : v;
+  }
   const idx = gridIndex(issue, v);
-  const tol = snapIdxTolerance(issue, idx);
+  const tol = snapIdxTolerance(issue, v, idx);
   let i: number;
   if (mode === "floor") i = Math.floor(idx + tol);
   else if (mode === "ceil") i = Math.ceil(idx - tol);
@@ -228,17 +247,18 @@ export function crossingTerms(
   return midpointPackage(issues, offers.claimant, offers.respondent);
 }
 
-type ShareInterval = { lo: number; hi: number };
+type ShareInterval = { lo: number; hi: number; minVal: number; maxVal: number };
 type ShareBox = Record<IssueId, ShareInterval>;
 
 function fullShareBox(issues: Issue[]): ShareBox {
   const box: ShareBox = {};
-  for (const issue of issues) box[issue.id] = { lo: 0, hi: 1 };
+  for (const issue of issues) box[issue.id] = { lo: 0, hi: 1, minVal: issue.min, maxVal: issue.max };
   return box;
 }
 
 /**
- * Convert per-issue value bounds into grid-snapped claimant-share intervals `[lo, hi]`.
+ * Convert per-issue value bounds into grid-snapped claimant-share intervals `[lo, hi]` carrying exact
+ * grid-snapped `[minVal, maxVal]` endpoints (H-10) so `nashOnBox` never re-derives bounds via lossy `valueForShare`.
  * Returns `null` if any issue contains no on-grid point inside the bounds.
  */
 function shareBoxFromLimits(issues: Issue[], limits: IssueLimits | undefined): ShareBox | null {
@@ -247,15 +267,16 @@ function shareBoxFromLimits(issues: Issue[], limits: IssueLimits | undefined): S
   for (const issue of issues) {
     const b = ownEntry(limits, issue.id);
     if (!b) {
-      box[issue.id] = { lo: 0, hi: 1 };
+      box[issue.id] = { lo: 0, hi: 1, minVal: issue.min, maxVal: issue.max };
       continue;
     }
     const gMin = snap(issue, Math.max(issue.min, b.min), "ceil");
     const gMax = snap(issue, Math.min(issue.max, b.max), "floor");
     if (gMin > gMax + EPS) return null;
-    const sMin = claimantShare(issue, gMin);
+    const clampedMin = Math.min(gMin, gMax);
+    const sMin = claimantShare(issue, clampedMin);
     const sMax = claimantShare(issue, gMax);
-    box[issue.id] = { lo: Math.min(sMin, sMax), hi: Math.max(sMin, sMax) };
+    box[issue.id] = { lo: Math.min(sMin, sMax), hi: Math.max(sMin, sMax), minVal: clampedMin, maxVal: gMax };
   }
   return box;
 }
@@ -264,10 +285,13 @@ function intersectShareBoxes(issues: Issue[], a: ShareBox | null, b: ShareBox | 
   if (!a || !b) return null;
   const out: ShareBox = {};
   for (const issue of issues) {
-    const lo = Math.max(a[issue.id]!.lo, b[issue.id]!.lo);
-    const hi = Math.min(a[issue.id]!.hi, b[issue.id]!.hi);
-    if (lo > hi + EPS) return null;
-    out[issue.id] = { lo: Math.min(lo, hi), hi };
+    const minVal = Math.max(a[issue.id]!.minVal, b[issue.id]!.minVal);
+    const maxVal = Math.min(a[issue.id]!.maxVal, b[issue.id]!.maxVal);
+    if (minVal > maxVal + EPS) return null;
+    const clampedMin = Math.min(minVal, maxVal);
+    const sMin = claimantShare(issue, clampedMin);
+    const sMax = claimantShare(issue, maxVal);
+    out[issue.id] = { lo: Math.min(sMin, sMax), hi: Math.max(sMin, sMax), minVal: clampedMin, maxVal };
   }
   return out;
 }
@@ -276,6 +300,16 @@ function pkgInBounds(issues: Issue[], bounds: IssueLimits, pkg: Package): boolea
   return issues.every((i) => {
     const b = ownEntry(bounds, i.id);
     if (!b) return false;
+    const v = pkg[i.id]!;
+    return v >= b.min - EPS && v <= b.max + EPS;
+  });
+}
+
+function pkgInOptionalLimits(issues: Issue[], limits: IssueLimits | undefined, pkg: Package): boolean {
+  if (!limits) return true;
+  return issues.every((i) => {
+    const b = ownEntry(limits, i.id);
+    if (!b) return true;
     const v = pkg[i.id]!;
     return v >= b.min - EPS && v <= b.max + EPS;
   });
@@ -400,13 +434,14 @@ export function declaredReferenceTerms(issues: Issue[], privates: Record<Party, 
 }
 
 /**
- * Optional post-settlement Pareto frontier improvement (MECH-10).
+ * Optional post-settlement Pareto frontier improvement (MECH-10, hardened in H-09).
  *
- * Given an already-settled `baselineTerms` package, searches the declared-limits box (intersection of any
- * declared `private.limits`, never narrowing the optimization box by private `mandate.bounds` — SA-CORE-M2)
- * for a grid package maximising symmetric Nash gain above `(Uc(baselineTerms), Ur(baselineTerms))`.
+ * Given an already-settled `baselineTerms` package, searches `fullShareBox(issues)` (never narrowing the
+ * optimization box by private `mandate.bounds` — SA-CORE-M2 — or private `private.limits` — H-09) for a
+ * grid package maximising Nash gain above `(Uc(baselineTerms), Ur(baselineTerms))` using the dispute's
+ * secret `split` (`α ∈ [0.3, 0.7]`, preventing algebraic inversion of 2-issue `private.weights`).
  * Returns `null` unless the candidate weakly improves both parties, increases combined utility by more than
- * `1e-6`, and lies within both parties' principal mandates.
+ * `1e-6`, and lies within both parties' principal mandates and declared `private.limits`.
  */
 export function paretoImproveTerms(
   issues: Issue[],
@@ -416,25 +451,24 @@ export function paretoImproveTerms(
   split = 0.5,
 ): Package | null {
   if (issues.length <= 1) return null;
-  const limitsBox = intersectShareBoxes(
-    issues,
-    shareBoxFromLimits(issues, privates.claimant.limits),
-    shareBoxFromLimits(issues, privates.respondent.limits),
-  );
-  if (!limitsBox) return null;
 
   const wc = privates.claimant.weights;
   const wr = privates.respondent.weights;
   const ucBase = utility(issues, wc, baselineTerms, "claimant");
   const urBase = utility(issues, wr, baselineTerms, "respondent");
-  const candidate = nashOnBox(issues, wc, wr, ucBase, urBase, split, limitsBox);
+  const candidate = nashOnBox(issues, wc, wr, ucBase, urBase, split, fullShareBox(issues));
   if (!candidate) return null;
 
   const ucNew = utility(issues, wc, candidate, "claimant");
   const urNew = utility(issues, wr, candidate, "respondent");
   if (ucNew < ucBase - EPS || urNew < urBase - EPS) return null;
   if (ucNew - ucBase + (urNew - urBase) <= 1e-6) return null;
-  if (!pkgInBounds(issues, mandates.claimant.bounds, candidate) || !pkgInBounds(issues, mandates.respondent.bounds, candidate)) {
+  if (
+    !pkgInBounds(issues, mandates.claimant.bounds, candidate) ||
+    !pkgInBounds(issues, mandates.respondent.bounds, candidate) ||
+    !pkgInOptionalLimits(issues, privates.claimant.limits, candidate) ||
+    !pkgInOptionalLimits(issues, privates.respondent.limits, candidate)
+  ) {
     return null;
   }
   return candidate;
@@ -539,41 +573,41 @@ export function presentProposal(issues: Issue[], basis: Record<Party, PrivateInp
   const boxR = shareBoxFromLimits(issues, basis.respondent.limits) ?? fullShareBox(issues);
   const joint = intersectShareBoxes(issues, boxC, boxR);
 
-  // Claimant stand-in: use joint box if `rc` is reachable on it; else fall back to claimant's own box `boxC`.
+  // Claimant stand-in (H-09): ALWAYS optimize on Claimant's own `boxC` (never `joint`, which would clamp
+  // Claimant's stand-in onto Respondent's secret `private.limits`), folding any joint/disjoint limit deficit
+  // into the scalar reflected disagreement utility `rrRef` blinded by secret `split`.
+  const urAtRc = frontierMaxOnBox(issues, wc, wr, rc, "claimant", boxC);
   const urAtRcJoint = joint ? frontierMaxOnBox(issues, wc, wr, rc, "claimant", joint) : -1;
-  let forClaimant: Package;
-  if (joint && urAtRcJoint >= 0) {
-    const rrRef = Math.max(0, urAtRcJoint - Math.max(0, rr - urAtRcJoint));
-    forClaimant = nashOnBox(issues, wc, wr, rc, rrRef, split, joint) ?? nashOnBox(issues, wc, wr, rc, 0, split, joint) ?? structuredClone(basis.claimant.walkaway);
-  } else {
-    const urAtRc = frontierMaxOnBox(issues, wc, wr, rc, "claimant", boxC);
-    let boxDeficit = 0;
-    for (const i of issues) {
-      boxDeficit += wr[i.id]! * Math.max(0, boxC[i.id]!.lo - boxR[i.id]!.hi, boxR[i.id]!.lo - boxC[i.id]!.hi);
-    }
-    const maxUcJoint = joint ? frontierMaxOnBox(issues, wr, wc, 0, "respondent", joint) : 0;
-    const deficit = Math.max(0, rr - urAtRc) + boxDeficit + (joint ? Math.max(0, rc - maxUcJoint) : 0);
-    const rrRef = Math.max(0, urAtRc - deficit);
-    forClaimant = nashOnBox(issues, wc, wr, rc, rrRef, split, boxC) ?? nashOnBox(issues, wc, wr, rc, 0, split, boxC) ?? structuredClone(basis.claimant.walkaway);
+  let boxDeficitC = 0;
+  for (const i of issues) {
+    boxDeficitC += wr[i.id]! * Math.max(0, boxC[i.id]!.lo - boxR[i.id]!.hi, boxR[i.id]!.lo - boxC[i.id]!.hi);
   }
+  const maxUcJoint = joint ? frontierMaxOnBox(issues, wr, wc, 0, "respondent", joint) : 0;
+  const jointDeficitC =
+    joint === null ? 0 : urAtRcJoint >= 0 ? Math.max(0, rr - urAtRcJoint) : Math.max(0, rc - maxUcJoint);
+  const deficitC = Math.max(Math.max(0, rr - urAtRc), jointDeficitC) + boxDeficitC;
+  const rrRef = Math.max(0, urAtRc - deficitC);
+  const forClaimant =
+    nashOnBox(issues, wc, wr, rc, rrRef, split, boxC) ??
+    nashOnBox(issues, wc, wr, rc, 0, split, boxC) ??
+    structuredClone(basis.claimant.walkaway);
 
-  // Respondent stand-in: symmetric on `joint` when `rr` is reachable there, else on `boxR`.
+  // Respondent stand-in (H-09): symmetric on Respondent's own `boxR` (never `joint`).
+  const ucAtRr = frontierMaxOnBox(issues, wr, wc, rr, "respondent", boxR);
   const ucAtRrJoint = joint ? frontierMaxOnBox(issues, wr, wc, rr, "respondent", joint) : -1;
-  let forRespondent: Package;
-  if (joint && ucAtRrJoint >= 0) {
-    const rcRef = Math.max(0, ucAtRrJoint - Math.max(0, rc - ucAtRrJoint));
-    forRespondent = nashOnBox(issues, wc, wr, rcRef, rr, split, joint) ?? nashOnBox(issues, wc, wr, 0, rr, split, joint) ?? structuredClone(basis.respondent.walkaway);
-  } else {
-    const ucAtRr = frontierMaxOnBox(issues, wr, wc, rr, "respondent", boxR);
-    let boxDeficit = 0;
-    for (const i of issues) {
-      boxDeficit += wc[i.id]! * Math.max(0, boxC[i.id]!.lo - boxR[i.id]!.hi, boxR[i.id]!.lo - boxC[i.id]!.hi);
-    }
-    const maxUrJoint = joint ? frontierMaxOnBox(issues, wc, wr, 0, "claimant", joint) : 0;
-    const deficit = Math.max(0, rc - ucAtRr) + boxDeficit + (joint ? Math.max(0, rr - maxUrJoint) : 0);
-    const rcRef = Math.max(0, ucAtRr - deficit);
-    forRespondent = nashOnBox(issues, wc, wr, rcRef, rr, split, boxR) ?? nashOnBox(issues, wc, wr, 0, rr, split, boxR) ?? structuredClone(basis.respondent.walkaway);
+  let boxDeficitR = 0;
+  for (const i of issues) {
+    boxDeficitR += wc[i.id]! * Math.max(0, boxC[i.id]!.lo - boxR[i.id]!.hi, boxR[i.id]!.lo - boxC[i.id]!.hi);
   }
+  const maxUrJoint = joint ? frontierMaxOnBox(issues, wc, wr, 0, "claimant", joint) : 0;
+  const jointDeficitR =
+    joint === null ? 0 : ucAtRrJoint >= 0 ? Math.max(0, rc - ucAtRrJoint) : Math.max(0, rr - maxUrJoint);
+  const deficitR = Math.max(Math.max(0, rc - ucAtRr), jointDeficitR) + boxDeficitR;
+  const rcRef = Math.max(0, ucAtRr - deficitR);
+  const forRespondent =
+    nashOnBox(issues, wc, wr, rcRef, rr, split, boxR) ??
+    nashOnBox(issues, wc, wr, 0, rr, split, boxR) ??
+    structuredClone(basis.respondent.walkaway);
 
   return { views: { claimant: forClaimant, respondent: forRespondent }, settles: false };
 }
@@ -589,15 +623,10 @@ function nashOnBox(
 ): Package | null {
   if (!(split > 0 && split < 1)) throw new Error("split must be in (0, 1)");
 
-  const movableWeighted = issues.filter((i) => {
-    const delta = box[i.id]!.hi - box[i.id]!.lo;
-    return delta > EPS && (wc[i.id]! > EPS || wr[i.id]! > EPS);
-  });
-  const fixedIssues = issues.filter((i) => box[i.id]!.hi - box[i.id]!.lo <= EPS);
-  const zeroWeightMovable = issues.filter((i) => {
-    const delta = box[i.id]!.hi - box[i.id]!.lo;
-    return delta > EPS && !(wc[i.id]! > EPS || wr[i.id]! > EPS);
-  });
+  const isFixed = (i: Issue) => box[i.id]!.maxVal - box[i.id]!.minVal <= EPS;
+  const movableWeighted = issues.filter((i) => !isFixed(i) && (wc[i.id]! > EPS || wr[i.id]! > EPS));
+  const fixedIssues = issues.filter((i) => isFixed(i));
+  const zeroWeightMovable = issues.filter((i) => !isFixed(i) && !(wc[i.id]! > EPS || wr[i.id]! > EPS));
 
   const ratio = (i: Issue) => (wr[i.id]! <= EPS ? Number.POSITIVE_INFINITY : wc[i.id]! / wr[i.id]!);
   const order = [...movableWeighted].sort((x, y) => {
@@ -617,30 +646,16 @@ function nashOnBox(
   const nash = (uc: number, ur: number) => Math.max(0, uc - rc) ** split * Math.max(0, ur - rr) ** (1 - split);
   const feasible = (uc: number, ur: number) => uc >= rc - EPS && ur >= rr - EPS;
 
-  const boxValueBounds = (issue: Issue): { min: number; max: number } | null => {
+  const boxValueBounds = (issue: Issue): { min: number; max: number } => {
     const iv = box[issue.id]!;
-    const vLo = valueForShare(issue, iv.lo);
-    const vHi = valueForShare(issue, iv.hi);
-    const rawMin = Math.min(vLo, vHi);
-    const rawMax = Math.max(vLo, vHi);
-    const min = snap(issue, rawMin, "ceil");
-    const max = snap(issue, rawMax, "floor");
-    if (min > max + EPS) {
-      if (Math.abs(rawMax - rawMin) <= EPS) {
-        const pt = snap(issue, (rawMin + rawMax) / 2, "nearest");
-        if (Math.abs(pt - rawMin) <= EPS) return { min: pt, max: pt };
-      }
-      return null;
-    }
-    return { min, max };
+    return { min: iv.minVal, max: iv.maxVal };
   };
 
   if (order.length === 0) {
     const single: Package = {};
-    for (const issue of fixedIssues) single[issue.id] = snap(issue, valueForShare(issue, box[issue.id]!.lo), "nearest");
+    for (const issue of fixedIssues) single[issue.id] = box[issue.id]!.minVal;
     for (const issue of zeroWeightMovable) {
       const vb = boxValueBounds(issue);
-      if (!vb) return null;
       single[issue.id] = Math.min(vb.max, Math.max(vb.min, snap(issue, (vb.min + vb.max) / 2, "nearest")));
     }
     const uc = utility(issues, wc, single, "claimant");
@@ -685,20 +700,24 @@ function nashOnBox(
   const base: Package = {};
   order.forEach((issue, j) => {
     const iv = box[issue.id]!;
-    const share = j < best.k ? iv.hi : j > best.k ? iv.lo : iv.lo + (iv.hi - iv.lo) * best.t;
-    base[issue.id] = j === best.k ? valueForShare(issue, share) : snap(issue, valueForShare(issue, share), "nearest");
+    if (j < best.k) {
+      base[issue.id] = issue.claimantPrefers === "higher" ? iv.maxVal : iv.minVal;
+    } else if (j > best.k) {
+      base[issue.id] = issue.claimantPrefers === "higher" ? iv.minVal : iv.maxVal;
+    } else {
+      const share = iv.lo + (iv.hi - iv.lo) * best.t;
+      base[issue.id] = valueForShare(issue, share);
+    }
   });
-  for (const issue of fixedIssues) base[issue.id] = snap(issue, valueForShare(issue, box[issue.id]!.lo), "nearest");
+  for (const issue of fixedIssues) base[issue.id] = box[issue.id]!.minVal;
   for (const issue of zeroWeightMovable) {
     const vb = boxValueBounds(issue);
-    if (!vb) return null;
     base[issue.id] = Math.min(vb.max, Math.max(vb.min, snap(issue, (vb.min + vb.max) / 2, "nearest")));
   }
 
   // Snap the fractional pivot issue inside its on-grid box bounds and recursively re-optimize remaining issues on the sub-box.
   const pivot = order[best.k]!;
   const pivotBounds = boxValueBounds(pivot);
-  if (!pivotBounds) return null;
   const exact = base[pivot.id]!;
   const snappedFloor = Math.min(pivotBounds.max, Math.max(pivotBounds.min, snap(pivot, exact, "floor")));
   const snappedCeil = Math.min(pivotBounds.max, Math.max(pivotBounds.min, snap(pivot, exact, "ceil")));
@@ -710,7 +729,10 @@ function nashOnBox(
       pkg = { ...base, [pivot.id]: snapped };
     } else {
       const sShare = Math.min(box[pivot.id]!.hi, Math.max(box[pivot.id]!.lo, claimantShare(pivot, snapped)));
-      pkg = nashOnBox(issues, wc, wr, rc, rr, split, { ...box, [pivot.id]: { lo: sShare, hi: sShare } });
+      pkg = nashOnBox(issues, wc, wr, rc, rr, split, {
+        ...box,
+        [pivot.id]: { lo: sShare, hi: sShare, minVal: snapped, maxVal: snapped },
+      });
     }
     if (!pkg) continue;
     const uc = utility(issues, wc, pkg, "claimant");

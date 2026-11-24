@@ -13,8 +13,8 @@ import { CLAIMANT, CONTRACT, DAY, expectError, Harness, mandate, MIN, REFUND, RE
 
 describe("CR3 core state-machine & audit-chain invariants", () => {
   it("preserves frozen RULES_VERSION and RULES_HASH invariants", () => {
-    assert.equal(RULES_VERSION, "1.3.0");
-    assert.equal(RULES_HASH, "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4");
+    assert.equal(RULES_VERSION, "1.4.0");
+    assert.equal(RULES_HASH, "10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173");
   });
 
   it("CR3-SVC-M1: UPDATE_MANDATE emits zero audit events, CONFIRM_ISSUES always emits MANDATE_REGISTERED, and ROUND_SUBMISSION / FINAL_OFFER fold mandate + mandateUpdates", () => {
@@ -146,15 +146,30 @@ describe("CR3 core state-machine & audit-chain invariants", () => {
     h.events.push(...ext.events);
     h.now += 130 * MIN; // T0 + 130m (within shifted stageDeadline = T0 + 140m)
 
-    // 3. Respondent confirms at T0 + 130m -> BARGAINING starts at startedAt = T0 + 130m.
+    // 3. Respondent confirms at T0 + 130m. Under M-10 (v1.4.0), Claimant's mandate (T0 + 180m) no longer covers
+    //    requiredBargainingHorizon (T0 + 220m), so CONFIRM_ISSUES resets confirmed.claimant = false instead of entering
+    //    BARGAINING with an under-horizon mandate. Claimant then re-confirms with a valid mandate -> BARGAINING starts.
     h.send({ type: "CONFIRM_ISSUES", actor: "respondent", issuesHash: hash });
+    assert.equal(h.state.status, "ISSUE_CONFIRMATION");
+    assert.equal(h.state.issueNegotiation.confirmed.claimant, false);
+    assert.equal(h.state.issueNegotiation.confirmed.respondent, true);
+    h.send({
+      type: "CONFIRM_ISSUES",
+      actor: "claimant",
+      issuesHash: hash,
+      mandate: mandate(CLAIMANT, { refundUsd: { min: 0, max: 1000 } }, T0 + 221 * MIN, T0 + 500, {
+        determinationConsent: true,
+        scope: { contractHash: CONTRACT, counterpartyId: RESPONDENT },
+      }),
+    });
     assert.equal(h.state.status, "BARGAINING");
 
     const startedAt = h.state.bargaining!.startedAt; // T0 + 130m
     const requiredBargainingHorizon = startedAt + 60 * MIN + 30 * MIN; // T0 + 220m
 
-    // Claimant tries UPDATE_MANDATE with expiresAt = T0 + 200m (>= old T0 + 180m, yet <= required T0 + 220m).
-    // Before CR3-CORE-L1, subtracting outageExtensionMs (120m) made requiredHorizon = T0 + 100m and let this slip through!
+    // Simulate a legacy pre-1.4.0 BARGAINING state with expiresAt = T0 + 180m and verify CR3-CORE-L1 still rejects
+    // UPDATE_MANDATE with expiresAt = T0 + 200m (<= required T0 + 220m, despite outageExtensionMs = 120m).
+    h.state.parties.claimant.mandate.expiresAt = T0 + 180 * MIN;
     expectError(
       h.attempt({
         type: "UPDATE_MANDATE",

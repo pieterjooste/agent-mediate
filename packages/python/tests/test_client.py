@@ -339,7 +339,7 @@ class PythonClientAndPayerTests(unittest.TestCase):
         )
 
         # 1. PR-L8: exported __version__, compute_terms_hash, compute_outcome_hash
-        self.assertEqual(am.__version__, "0.1.2")
+        self.assertEqual(am.__version__, "0.2.0")
         terms_h = compute_terms_hash({"refundUsd": 420})
         self.assertEqual(len(terms_h), 64)
         outcome_h = compute_outcome_hash(
@@ -546,7 +546,7 @@ class PythonClientAndPayerTests(unittest.TestCase):
         """D126 (v1.2.0/v1.3.0): Python SDK update_mandate, reject_issues(issues_hash, adopt_suggested_ids=...), and confidential signature target parity."""
         from agent_mediate import verify_dispute_action_target, verify_mandate_signature
 
-        self.assertEqual(RULES_VERSION, "1.3.0")
+        self.assertEqual(RULES_VERSION, "1.4.0")
         self.assertIs(MECHANISM_SPEC["issueNegotiation"]["adoptSuggestedOnReject"], True)
         self.assertIs(MECHANISM_SPEC["issueNegotiation"]["rejectRequiresIssuesHash"], True)
         self.assertEqual(MECHANISM_SPEC["mandateEscalation"]["maxUpdatesPerParty"], 3)

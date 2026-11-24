@@ -1,8 +1,9 @@
-# Agent-Mediate Mechanism Specification (`rulesVersion: "1.3.0"`)
+# Agent-Mediate Mechanism Specification (`rulesVersion: "1.4.0"`)
 
 - **Schema:** `agent-mediate/mechanism-spec/v1`
-- **Rules Version (`RULES_VERSION`):** `1.3.0`
-- **Canonical Rules Hash (`RULES_HASH`):** `8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4`
+- **Rules Version (`RULES_VERSION`):** `1.4.0`
+- **Canonical Rules Hash (`RULES_HASH`):** `10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173`
+- **Historical Rules Hash (`1.3.0`):** `8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4` (honored for transition pre-dispute clauses and historical outcome verification)
 - **Machine-Readable Endpoint:** `GET /v1/rules` (`sha256Hex(canonicalJson(spec)) === rulesHash`)
 
 Every platform-signed settlement instruction, `UNRESOLVED` certificate, transparency checkpoint, and co-signed `agent-mediate/clause/v1` embeds `rulesVersion` and `rulesHash` (RFC 8785 JCS + SHA-256 over `MECHANISM_SPEC`). Any change to the deterministic rules, domains, clamping, distance metric, or window limits changes `RULES_HASH` and requires a `RULES_VERSION` bump.
@@ -16,8 +17,8 @@ A confirmed dispute defines $1 \le m \le 5$ negotiable issues $I = \{i_1, \dots,
 - Preference orientation $i.\text{claimantPrefers} \in \{\text{"higher"}, \text{"lower"}\}$ (the respondent strictly prefers the opposite direction).
 - Designated performer $i.\text{obligor} \in \{\text{"claimant"}, \text{"respondent"}\}$.
 
-### Grid Alignment & Even-Half Rounding
-Every package $x \in \mathbb{R}^m$ submitted or output by the mechanism lies on the exact step grid $x_i = i.\text{min} + k \cdot i.\text{step}$ ($k \in \mathbb{Z}$). Exact half-step midpoints snap to the **even** grid index $k$ so rounding has zero directional bias toward claimant or respondent.
+### Grid Alignment & Even-Half Rounding (`H-10`)
+Every package $x \in \mathbb{R}^m$ submitted or output by the mechanism lies on the exact step grid $x_i = i.\text{min} + k \cdot i.\text{step}$ ($k \in \mathbb{Z}$). Exact half-step midpoints snap to the **even** grid index $k$ so rounding has zero directional bias toward claimant or respondent. Under `v1.4.0` (`H-10`), `snap()` uses exact integer arithmetic on integer grids and ULP-scaled index tolerances (capped at `0.25`, matching `gridTolerance`) on fractional grids (e.g., USD cents and `1e-6` ratios), while `ShareBox` carries exact grid-snapped `[minVal, maxVal]` bounds without lossy share round-tripping.
 
 ### Normalised Share & Additive Utility
 For value $x_i \in [i.\text{min}, i.\text{max}]$, the claimant's normalised share is:
@@ -85,23 +86,24 @@ From `proposalFromRound` (default Round 2), the platform presents an `openPropos
 
   (ties within $10^{-9}$ break by smaller distance from the continuous pivot value, then by the even grid index of the pivot, `FS-M4b`). If both parties respond `"accept"` and $x \in B_C \cap B_R$, the dispute settles with `method: "PROPOSAL_ACCEPTED"`.
 - **The search is best-effort, not exhaustive (D125, `CR-CORE-M1`, `CR-CORE-L5`).** On coarse multi-issue grids with a very narrow zone of agreement it can miss an on-grid package both parties would accept: about 0.1% of random 3-issue disputes that have such a package, and none of 20,000 random 2-issue disputes with strictly positive surplus. A miss is never a wrong settlement; it only means no settling proposal is shown that round (the parties see stand-ins, below), and bargaining, final-offer determination and every other guarantee continue unchanged. Note on historical verifiability (`CR-CORE-L5`): recursive multi-issue pivot snapping (`FS-H1`) and even-grid-index midpoint tie-breaking (`FS-M4b`) took effect on **2026-11-05** under `RULES_VERSION = "1.1.0"`; proposal openings (`verifyProposalOpening`) from pre-2026-11-05 multi-issue or odd-step disputes may differ on round proposals while their signed outcomes and audit chains remain valid. An exact, bounded branch-and-bound search is deferred to a future rules version, together with dual-version proposal verification.
-- If no mutually acceptable zone exists in $\mathcal{F}$ (`settles = false`, never disclosed), each party $p$ sees a deterministic reflected stand-in inside its own $L_p$ at or above $U_p(W_p)$ (`CR2-2`, `D75`). Accepting a stand-in behaves identically to a counterparty rejection, preserving strict non-interference across arbitrary counterparty walkaways.
+- If no mutually acceptable zone exists in $\mathcal{F}$ (`settles = false`, never disclosed), each party $p$ sees a deterministic reflected stand-in optimized strictly over its **own** box $L_p$ (never $L_C \cap L_R$, preventing counterparty `private.limits` boundary clamping, `H-09`) at or above $U_p(W_p)$, folding any joint or disjoint limit deficit into the scalar reflected disagreement utility blinded by secret $\alpha$ (`CR2-2`, `D75`, `H-09`). Accepting a stand-in behaves identically to a counterparty rejection, preserving strict non-interference across arbitrary counterparty walkaways and limits.
 
 ---
 
-## 5. Post-Settlement Pareto Frontier Improvement (`MECH-10`)
+## 5. Post-Settlement Pareto Frontier Improvement (`MECH-10`, `H-09`)
 
-When a multi-issue dispute settles with `EXECUTION_PENDING` and strictly Pareto-superior packages $x \in (B_C \cap L_C) \cap (B_R \cap L_R)$ exist above the settled baseline $T$ ($U_C(x) \ge U_C(T)$, $U_R(x) \ge U_R(T)$, with at least one strict inequality), the platform computes the symmetric ($\alpha = 0.5$) Nash improvement over baseline $T$ (**never** over secret walkaways $W_p$) and opens `execution.improvement`.
+When a multi-issue dispute settles with `EXECUTION_PENDING`, the platform searches the **full issue grid** (never optimizing against secret `mandate.bounds` or `private.limits` — `SA-CORE-M2`, `H-09`) for the grid package maximising the Nash product above the settled baseline $T$ (**never** over secret walkaways $W_p$) using the dispute's secret per-dispute split $\alpha \in [0.3, 0.7]$ (`H-09`, preventing algebraic weight inversion from a fixed public `0.5` split). The improvement opens in `execution.improvement` if and only if the candidate weakly improves both parties ($U_C(x) \ge U_C(T)$, $U_R(x) \ge U_R(T)$), raises combined utility by more than $10^{-6}$, and passes post-hoc membership checks inside both parties' `mandate.bounds` and declared `private.limits`.
 - Individual responses remain masked until resolved.
 - If both parties submit `accept` before any execution proof is filed, `SETTLEMENT_IMPROVED` upgrades the settled terms and records a new signed snapshot in `dispute_outcomes`.
 
 ---
 
-## 6. Stall Detection (`MECH-3`) and Wall-Clock Guard (`MECH-4`)
+## 6. Stall Detection (`MECH-3`), Wall-Clock Guard (`MECH-4`), and Outage Mandate Guard (`M-10`)
 
 - **Gap:** $\text{gap}_r = \frac{1}{m}\sum_{i \in I} \max(0,\, s_C(i, O_{C,i}) - s_C(i, O_{R,i})) \in [0, 1]$.
 - **Relative Progress (`MECH-3`):** Round $r \ge 2$ makes progress when $\text{gap}_{r-1} - \text{gap}_r \ge \text{stallThreshold} \cdot \text{gap}_{r-1}$ (default `stallThreshold = 0.05` over `stallWindow = 2` consecutive transitions). Using relative reduction avoids false `STALLED` terminations when parties actively concede inside a narrow $< 5\%$ gap.
 - **Full-Window Guard (`MECH-4`):** Round $r + 1$ opens only if $r < \text{maxRounds}$ and $\text{wallClockDeadline} - \text{now} \ge \text{roundTimeoutMs}$.
+- **Outage Mandate Expiry Guard (`M-10`):** When a recorded platform outage extends stage deadlines (`extendDeadlines`), principal-signed `mandate.expiresAt` is never mutated by the platform. At `CONFIRM_ISSUES`, before entering `BARGAINING`, both parties' mandates are re-verified against `now + requiredHorizon`; if the first confirmer's mandate became stale during the outage, their confirmation resets so they can re-confirm with a renewed mandate (or let `ISSUE_CONFIRMATION` close cleanly). Inside `resolveRound`, expired mandates neither increment `misses` nor trigger adverse `TIMEOUT` / `MISSED_ROUNDS`; instead bargaining closes cleanly via `NO_OVERLAP_AT_CAP`.
 
 ---
 

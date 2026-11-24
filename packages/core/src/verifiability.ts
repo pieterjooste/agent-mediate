@@ -43,7 +43,7 @@ export const MECHANISM_SPEC = deepFreeze({
   canonicalization: "RFC 8785 (JCS) + SHA-256",
   grid: {
     maxIssues: MAX_ISSUES,
-    stepAlignment: "exact_integer_step_grid",
+    stepAlignment: "exact_integer_and_ulp_scaled_fractional_grid_H10",
     monotonicity: "per_issue_no_retraction",
   },
   crossingSettlement: {
@@ -59,11 +59,12 @@ export const MECHANISM_SPEC = deepFreeze({
     keyCommitDomain: "agent-mediate/proposal-key-commit/v1",
     declaredCommitDomain: "agent-mediate/declared-input-commit/v1",
     objective: "asymmetric_nash_product_within_declared_limits_MECH_7",
-    noZoneBehavior: "non_settling_reflected_stand_in_within_viewer_limits_D75",
+    noZoneBehavior: "non_settling_reflected_stand_in_within_viewer_box_H09",
   },
   postSettlementImprovement: {
     enabled: true,
-    split: 0.5,
+    split: "secret_per_dispute_alpha_H09",
+    optimizationBox: "full_issue_grid_post_hoc_mandates_and_limits_H09",
     baseline: "settled_terms_never_walkaways_MECH_10",
     acceptance: "unanimous_within_mandates_before_execution_proof",
   },
@@ -91,6 +92,9 @@ export const MECHANISM_SPEC = deepFreeze({
     freezesDeterminationConsentAtBargainingStart: true,
     preservesFrozenRound1Private: true,
   },
+  outageGrace: {
+    mandateExpiryGuard: "recheck_both_mandates_at_confirm_and_before_timeout_M10",
+  },
   execution: {
     zeroObligationImmediateHonored: true,
     uncontestedProofAtDeadline: "HONORED_MECH_2",
@@ -114,6 +118,11 @@ export const MECHANISM_SPEC = deepFreeze({
 
 /** SHA-256 of the RFC 8785 JCS canonical `MECHANISM_SPEC` for `RULES_VERSION` (DISC-11). */
 export const RULES_HASH: string = sha256Hex(canonicalJson(MECHANISM_SPEC));
+
+/** Canonical historical `RULES_HASH` map for prior published rules versions (graceful clause & verifier continuity). */
+export const HISTORICAL_RULES_HASHES: Readonly<Record<string, string>> = Object.freeze({
+  "1.3.0": "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4",
+});
 
 // ---------------------------------------------------------------------------
 // SEC3-4: Outcome & Terms Commitments

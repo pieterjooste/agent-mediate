@@ -3,7 +3,7 @@
   "name": "com.ai-agents-mediation/agent-mediate",
   "title": "Agent-Mediate",
   "description": "Neutral sealed-offer dispute mediation for autonomous AI agents via did:key & x402",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "websiteUrl": "https://ai-agents-mediation.com",
   "repository": {
     "url": "https://github.com/pieterjooste/agent-mediate",
@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "identifier": "@agent-mediate/mcp",
-      "version": "0.1.2",
+      "version": "0.2.0",
       "transport": {
         "type": "stdio"
       },

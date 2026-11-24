@@ -154,8 +154,8 @@ class PythonCryptoAndJcsTests(unittest.TestCase):
             canonical_json(num_keys),
             '{"01":3,"10":1,"9":2,"__proto__":9,"a":4,"nested":{"10":"ten","2":"two"}}',
         )
-        # Pin golden RULES_HASH (D118, D126, v1.3.0, review M9)
-        self.assertEqual(RULES_HASH, "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4")
+        # Pin golden RULES_HASH (D118, D126, D130, v1.4.0, review M9)
+        self.assertEqual(RULES_HASH, "10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173")
 
     def test_ed25519_torsion_r_signature_split_rejected(self) -> None:
         a = generate_agent_key()

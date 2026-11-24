@@ -129,6 +129,7 @@ export {
   derivePartyInputSalt,
   EMPTY_MERKLE_ROOT,
   encodeBaseAnchorCalldata,
+  HISTORICAL_RULES_HASHES,
   MECHANISM_SPEC,
   PROPOSAL_KEY_COMMIT_DOMAIN,
   RULES_HASH,

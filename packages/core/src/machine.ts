@@ -515,6 +515,18 @@ function handle(tx: Tx, cmd: Exclude<Command, { type: "TICK" }>): void {
       neg.confirmed[cmd.actor] = true;
       emit(tx, "ISSUES_CONFIRMED_BY", "both", { party: cmd.actor, issuesHash: neg.proposedHash });
       if (neg.confirmed.claimant && neg.confirmed.respondent) {
+        // M-10: After an outage deadline extension, the first confirmer's mandate may have expired or fallen
+        // below the bargaining/determination horizon before the second party confirmed. Never enter BARGAINING
+        // with an expired or under-horizon mandate; reset the stale party's confirmation so they can re-confirm
+        // with a renewed mandate (or let ISSUE_CONFIRMATION expire cleanly as ISSUES_NOT_AGREED).
+        const otherActor = other(cmd.actor);
+        const otherParty = s.parties[otherActor]!;
+        const otherRequiredHorizon =
+          s.config.bargainingWallClockMs + (otherParty.determinationConsent ? s.config.determinationTimeoutMs : 0);
+        if (otherParty.mandate.expiresAt <= tx.now || otherParty.mandate.expiresAt <= tx.now + otherRequiredHorizon) {
+          neg.confirmed[otherActor] = false;
+          return;
+        }
         delete neg.priorAdoptedSuggestedIds;
         s.issues = structuredClone(neg.proposed);
         startBargaining(tx);
@@ -940,10 +952,18 @@ function resolveRound(tx: Tx): void {
   const cfg = s.config;
 
   const submitted = { claimant: b.submissions.claimant !== null, respondent: b.submissions.respondent !== null };
+  // M-10: Check mandate activity before mutating misses or emitting adverse TIMEOUT. If a platform outage
+  // extended roundDeadline past a party's principal-signed mandate expiry, that party could not legally
+  // submit; do not penalize them with a miss or TIMEOUT / MISSED_ROUNDS.
+  const mandateActive = {
+    claimant: s.parties.claimant.mandate.expiresAt > tx.now,
+    respondent: s.parties.respondent!.mandate.expiresAt > tx.now,
+  };
+  const bothMandatesActive = mandateActive.claimant && mandateActive.respondent;
   for (const p of PARTIES) {
     const sub = b.submissions[p];
     if (sub !== null) b.lastOffer[p] = sub.offer;
-    else b.misses[p] += 1;
+    else if (mandateActive[p]) b.misses[p] += 1;
   }
   const responses = {
     claimant: b.submissions.claimant?.proposalResponse ?? (b.proposal ? "reject" : null),
@@ -964,9 +984,6 @@ function resolveRound(tx: Tx): void {
   emit(tx, "ROUND_RECORD", "internal", { record: b.history[b.history.length - 1] });
   emit(tx, "ROUND_CLOSED", "both", { round: b.round });
 
-  const bothMandatesActive =
-    s.parties.claimant.mandate.expiresAt > tx.now && s.parties.respondent!.mandate.expiresAt > tx.now;
-
   if (
     bothMandatesActive &&
     b.proposal !== null &&
@@ -981,6 +998,10 @@ function resolveRound(tx: Tx): void {
       settle(tx, "PROPOSAL_ACCEPTED", terms);
       return;
     }
+  }
+  if (!bothMandatesActive) {
+    endWithoutDeal(tx, "NO_OVERLAP_AT_CAP");
+    return;
   }
   if (c === null || r === null) {
     unresolved(tx, "TIMEOUT");
@@ -1166,14 +1187,18 @@ function settle(tx: Tx, method: SettlementMethod, terms: Package): void {
     termsHash,
     outcomeHash: computeOutcomeHash(s.outcome, "EXECUTION_PENDING"),
   });
-  // MECH-10: when multi-issue declared preferences leave Pareto-superior surplus above the settled package
-  // inside both mandates (and any declared limits), offer it for optional mutual acceptance before execution.
+  // MECH-10 / H-09: when multi-issue declared preferences leave Pareto-superior surplus above the settled package
+  // on the full issue grid (checked post-hoc against both mandates and declared limits) using the dispute's secret
+  // split α, offer it for optional mutual acceptance before execution.
   if (s.bargaining?.private.claimant && s.bargaining.private.respondent && s.parties.respondent) {
+    const privates = { claimant: s.bargaining.private.claimant, respondent: s.bargaining.private.respondent };
+    const split = s.proposalKey ? proposalSplitFromKey(s.proposalKey, privates) : proposalSplit(s.audit.salt, s.id);
     const improved = paretoImproveTerms(
       issues,
       s.outcome.terms,
-      { claimant: s.bargaining.private.claimant, respondent: s.bargaining.private.respondent },
+      privates,
       { claimant: s.parties.claimant.mandate, respondent: s.parties.respondent.mandate },
+      split,
     );
     if (improved !== null) {
       s.execution.improvement = {

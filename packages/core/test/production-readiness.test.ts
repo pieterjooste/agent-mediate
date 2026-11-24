@@ -36,9 +36,9 @@ import {
 import { CLAIMANT, CONTRACT, mandate, REFUND, RESPONDENT, SALT, T0 } from "./helpers.ts";
 
 describe("2026-11-11 production-readiness: @agent-mediate/core", () => {
-  it("preserves RULES_VERSION 1.3.0 and RULES_HASH invariant", () => {
-    assert.equal(RULES_VERSION, "1.3.0");
-    assert.equal(RULES_HASH, "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4");
+  it("preserves RULES_VERSION 1.4.0 and RULES_HASH invariant", () => {
+    assert.equal(RULES_VERSION, "1.4.0");
+    assert.equal(RULES_HASH, "10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173");
   });
 
   it("PR-CORE-M1: canonicalJson rejects non-plain objects instead of serializing them as {}", () => {

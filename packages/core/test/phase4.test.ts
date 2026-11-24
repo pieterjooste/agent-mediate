@@ -34,11 +34,11 @@ import {
 } from "../src/index.ts";
 import { CLAIMANT, CONTRACT, CREDIT, Harness, REFUND, RESPONDENT, SALT, single } from "./helpers.ts";
 
-const GOLDEN_RULES_HASH = "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4";
+const GOLDEN_RULES_HASH = "10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173";
 
 describe("Phase 4 core verifiability primitives", () => {
   it("pins golden RULES_HASH and deep-freezes MECHANISM_SPEC against accidental mutation (DISC-11, M9)", () => {
-    assert.equal(RULES_VERSION, "1.3.0");
+    assert.equal(RULES_VERSION, "1.4.0");
     assert.equal(MECHANISM_SPEC.rulesVersion, RULES_VERSION);
     assert.equal(RULES_HASH, GOLDEN_RULES_HASH);
     assert.equal(RULES_HASH, sha256Hex(canonicalJson(MECHANISM_SPEC)));

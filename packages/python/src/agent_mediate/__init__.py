@@ -1,7 +1,7 @@
 """
 Agent-Mediate Python SDK (`agent-mediate`).
 """
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 from .client import (
     BASE_MAINNET,
@@ -36,7 +36,16 @@ from .crypto import (
     verify_text,
     weak_point_reason,
 )
-from .jcs import MECHANISM_SPEC, RULES_HASH, RULES_VERSION, canonical_json, contract_hash, loads_jcs_json, sha256_hex
+from .jcs import (
+    HISTORICAL_RULES_HASHES,
+    MECHANISM_SPEC,
+    RULES_HASH,
+    RULES_VERSION,
+    canonical_json,
+    contract_hash,
+    loads_jcs_json,
+    sha256_hex,
+)
 from .protocol import (
     BASE_ANCHOR_MAGIC,
     BODY_REQUIRED_DISPUTE_ACTIONS,
@@ -118,6 +127,7 @@ __all__ = [
     "DOCUMENT_DOMAIN_V2",
     "EMPTY_MERKLE_ROOT",
     "GENESIS_HASH",
+    "HISTORICAL_RULES_HASHES",
     "HONOURS_ATTESTATION_TYPE",
     "HttpResponse",
     "KEY_HISTORY_TYPE",

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 /** Published deterministic mechanism rules version embedded in outcomes and pre-dispute clauses. */
-export const RULES_VERSION = "1.3.0";
+export const RULES_VERSION = "1.4.0";
 
 /**
  * RFC 8785 (JCS) deterministic JSON: object keys sorted recursively by UTF-16 code units,

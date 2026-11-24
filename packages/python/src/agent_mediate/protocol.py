@@ -1410,6 +1410,7 @@ def verify_clause(
     key_history: Optional[Mapping[str, Any]] = None,
     expected_contract_hash: Optional[str] = None,
     expected_rules_hash: Optional[str] = None,
+    accepted_rules_hashes: Optional[Sequence[str]] = None,
     claimant_id: Optional[str] = None,
     respondent_id: Optional[str] = None,
     now_ms: Optional[int] = None,
@@ -1461,13 +1462,20 @@ def verify_clause(
             return {"ok": False, "reason": "clause.platform.did does not match this platform"}
     elif expected_platform_did is not None and platform.get("did") != expected_platform_did:
         return {"ok": False, "reason": "clause.platform.did does not match this platform"}
+    allowed_rules_hashes: Optional[set[str]] = None
+    if expected_rules_hash is not None or accepted_rules_hashes:
+        allowed_rules_hashes = set()
+        if expected_rules_hash is not None:
+            allowed_rules_hashes.add(expected_rules_hash)
+        if accepted_rules_hashes:
+            allowed_rules_hashes.update(accepted_rules_hashes)
     if "rulesHash" in platform:
         p_rules_hash = platform["rulesHash"]
         if not isinstance(p_rules_hash, str) or not _SHA256_HEX_RE.fullmatch(p_rules_hash):
             return {"ok": False, "reason": "clause.platform.rulesHash must be 64 lowercase hex characters"}
-        if expected_rules_hash is not None and p_rules_hash != expected_rules_hash:
+        if allowed_rules_hashes is not None and p_rules_hash not in allowed_rules_hashes:
             return {"ok": False, "reason": "clause.platform.rulesHash does not match this platform's active rulesHash"}
-    elif expected_rules_hash is not None:
+    elif allowed_rules_hashes is not None:
         return {"ok": False, "reason": "clause.platform.rulesHash is missing"}
     if "expiresAt" in clause:
         expires_at = clause["expiresAt"]
@@ -2167,13 +2175,28 @@ def _utility(issues: Sequence[Mapping[str, Any]], weights: Mapping[str, float], 
     return u
 
 
-def _snap_idx_tolerance(issue: Mapping[str, Any], idx: float) -> float:
-    return min(_EPS, _EPS / float(issue["step"]) + 8.0 * sys.float_info.epsilon * max(1.0, abs(idx)))
+def _snap_idx_tolerance(issue: Mapping[str, Any], v: float, idx: float) -> float:
+    st = float(issue["step"])
+    ulp_idx = (16.0 * sys.float_info.epsilon * (abs(v) + abs(float(issue["min"])) + _issue_range(issue))) / st + (
+        8.0 * sys.float_info.epsilon * max(1.0, abs(idx))
+    )
+    base = _EPS if (_is_exact_int_number(issue["min"]) and _is_exact_int_number(issue["step"])) else max(_EPS, _EPS / st)
+    return min(0.25, base + ulp_idx)
 
 
 def _snap(issue: Mapping[str, Any], v: float, mode: str) -> float:
+    if (
+        _is_exact_int_number(issue["min"])
+        and _is_exact_int_number(issue["step"])
+        and _is_exact_int_number(v)
+        and int(v) >= int(issue["min"])
+        and int(v) <= int(issue["max"])
+        and (int(v) - int(issue["min"])) % int(issue["step"]) == 0
+    ):
+        iv = int(v)
+        return 0 if iv == 0 else iv
     idx = (v - float(issue["min"])) / float(issue["step"])
-    tol = _snap_idx_tolerance(issue, idx)
+    tol = _snap_idx_tolerance(issue, v, idx)
     if mode == "floor":
         i = math.floor(idx + tol)
     elif mode == "ceil":
@@ -2201,7 +2224,15 @@ def _midpoint_package(issues: Sequence[Mapping[str, Any]], a: Mapping[str, float
 
 
 def _full_share_box(issues: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, float]]:
-    return {str(issue["id"]): {"lo": 0.0, "hi": 1.0} for issue in issues}
+    return {
+        str(issue["id"]): {
+            "lo": 0.0,
+            "hi": 1.0,
+            "minVal": issue["min"],
+            "maxVal": issue["max"],
+        }
+        for issue in issues
+    }
 
 
 def _share_box_from_limits(
@@ -2215,15 +2246,16 @@ def _share_box_from_limits(
         iid = str(issue["id"])
         b = limits.get(iid)
         if not b:
-            box[iid] = {"lo": 0.0, "hi": 1.0}
+            box[iid] = {"lo": 0.0, "hi": 1.0, "minVal": issue["min"], "maxVal": issue["max"]}
             continue
         g_min = _snap(issue, max(float(issue["min"]), float(b["min"])), "ceil")
         g_max = _snap(issue, min(float(issue["max"]), float(b["max"])), "floor")
         if g_min > g_max + _EPS:
             return None
-        s_min = _claimant_share(issue, g_min)
+        clamped_min = min(g_min, g_max)
+        s_min = _claimant_share(issue, clamped_min)
         s_max = _claimant_share(issue, g_max)
-        box[iid] = {"lo": min(s_min, s_max), "hi": max(s_min, s_max)}
+        box[iid] = {"lo": min(s_min, s_max), "hi": max(s_min, s_max), "minVal": clamped_min, "maxVal": g_max}
     return box
 
 
@@ -2237,11 +2269,14 @@ def _intersect_share_boxes(
     out: Dict[str, Dict[str, float]] = {}
     for issue in issues:
         iid = str(issue["id"])
-        lo = max(float(a[iid]["lo"]), float(b[iid]["lo"]))
-        hi = min(float(a[iid]["hi"]), float(b[iid]["hi"]))
-        if lo > hi + _EPS:
+        min_val = max(a[iid]["minVal"], b[iid]["minVal"])
+        max_val = min(a[iid]["maxVal"], b[iid]["maxVal"])
+        if float(min_val) > float(max_val) + _EPS:
             return None
-        out[iid] = {"lo": min(lo, hi), "hi": hi}
+        clamped_min = min(min_val, max_val)
+        s_min = _claimant_share(issue, float(clamped_min))
+        s_max = _claimant_share(issue, float(max_val))
+        out[iid] = {"lo": min(s_min, s_max), "hi": max(s_min, s_max), "minVal": clamped_min, "maxVal": max_val}
     return out
 
 
@@ -2301,18 +2336,20 @@ def _nash_on_box(
     split: float,
     box: Mapping[str, Mapping[str, float]],
 ) -> Optional[Dict[str, float]]:
+    def is_fixed(i: Mapping[str, Any]) -> bool:
+        iv = box[str(i["id"])]
+        return float(iv["maxVal"]) - float(iv["minVal"]) <= _EPS
+
     movable_weighted = [
         i
         for i in issues
-        if (float(box[str(i["id"])]["hi"]) - float(box[str(i["id"])]["lo"])) > _EPS
-        and (float(wc[str(i["id"])]) > _EPS or float(wr[str(i["id"])]) > _EPS)
+        if not is_fixed(i) and (float(wc[str(i["id"])]) > _EPS or float(wr[str(i["id"])]) > _EPS)
     ]
-    fixed_issues = [i for i in issues if (float(box[str(i["id"])]["hi"]) - float(box[str(i["id"])]["lo"])) <= _EPS]
+    fixed_issues = [i for i in issues if is_fixed(i)]
     zero_weight_movable = [
         i
         for i in issues
-        if (float(box[str(i["id"])]["hi"]) - float(box[str(i["id"])]["lo"])) > _EPS
-        and not (float(wc[str(i["id"])]) > _EPS or float(wr[str(i["id"])]) > _EPS)
+        if not is_fixed(i) and not (float(wc[str(i["id"])]) > _EPS or float(wr[str(i["id"])]) > _EPS)
     ]
     order = _sort_issues_by_ratio(movable_weighted, wc, wr)
 
@@ -2325,21 +2362,9 @@ def _nash_on_box(
     def feasible(uc: float, ur: float) -> bool:
         return uc >= rc - _EPS and ur >= rr - _EPS
 
-    def box_value_bounds(issue: Mapping[str, Any]) -> Optional[Dict[str, float]]:
+    def box_value_bounds(issue: Mapping[str, Any]) -> Dict[str, float]:
         iv = box[str(issue["id"])]
-        v_lo = _value_for_share(issue, float(iv["lo"]))
-        v_hi = _value_for_share(issue, float(iv["hi"]))
-        raw_min = min(v_lo, v_hi)
-        raw_max = max(v_lo, v_hi)
-        b_min = _snap(issue, raw_min, "ceil")
-        b_max = _snap(issue, raw_max, "floor")
-        if b_min > b_max + _EPS:
-            if abs(raw_max - raw_min) <= _EPS:
-                pt = _snap(issue, (raw_min + raw_max) / 2.0, "nearest")
-                if abs(pt - raw_min) <= _EPS:
-                    return {"min": pt, "max": pt}
-            return None
-        return {"min": b_min, "max": b_max}
+        return {"min": iv["minVal"], "max": iv["maxVal"]}
 
     def order_like(pkg: Mapping[str, float]) -> Dict[str, float]:
         out: Dict[str, float] = {}
@@ -2351,12 +2376,10 @@ def _nash_on_box(
     if len(order) == 0:
         single: Dict[str, float] = {}
         for issue in fixed_issues:
-            single[str(issue["id"])] = _snap(issue, _value_for_share(issue, float(box[str(issue["id"])]["lo"])), "nearest")
+            single[str(issue["id"])] = box[str(issue["id"])]["minVal"]
         for issue in zero_weight_movable:
             vb = box_value_bounds(issue)
-            if vb is None:
-                return None
-            single[str(issue["id"])] = min(vb["max"], max(vb["min"], _snap(issue, (vb["min"] + vb["max"]) / 2.0, "nearest")))
+            single[str(issue["id"])] = min(vb["max"], max(vb["min"], _snap(issue, (float(vb["min"]) + float(vb["max"])) / 2.0, "nearest")))
         return order_like(single) if feasible(_utility(issues, wc, single, "claimant"), _utility(issues, wr, single, "respondent")) else None
 
     best: Optional[Dict[str, Any]] = None
@@ -2389,32 +2412,41 @@ def _nash_on_box(
     for j, issue in enumerate(order):
         iid = str(issue["id"])
         iv = box[iid]
-        share = float(iv["hi"]) if j < best["k"] else (float(iv["lo"]) if j > best["k"] else float(iv["lo"]) + (float(iv["hi"]) - float(iv["lo"])) * float(best["t"]))
-        base_pkg[iid] = _value_for_share(issue, share) if j == best["k"] else _snap(issue, _value_for_share(issue, share), "nearest")
+        if j < best["k"]:
+            base_pkg[iid] = iv["maxVal"] if issue["claimantPrefers"] == "higher" else iv["minVal"]
+        elif j > best["k"]:
+            base_pkg[iid] = iv["minVal"] if issue["claimantPrefers"] == "higher" else iv["maxVal"]
+        else:
+            share = float(iv["lo"]) + (float(iv["hi"]) - float(iv["lo"])) * float(best["t"])
+            base_pkg[iid] = _value_for_share(issue, share)
     for issue in fixed_issues:
-        base_pkg[str(issue["id"])] = _snap(issue, _value_for_share(issue, float(box[str(issue["id"])]["lo"])), "nearest")
+        base_pkg[str(issue["id"])] = box[str(issue["id"])]["minVal"]
     for issue in zero_weight_movable:
         vb = box_value_bounds(issue)
-        if vb is None:
-            return None
-        base_pkg[str(issue["id"])] = min(vb["max"], max(vb["min"], _snap(issue, (vb["min"] + vb["max"]) / 2.0, "nearest")))
+        base_pkg[str(issue["id"])] = min(vb["max"], max(vb["min"], _snap(issue, (float(vb["min"]) + float(vb["max"])) / 2.0, "nearest")))
 
     pivot = order[best["k"]]
     pid = str(pivot["id"])
     p_bounds = box_value_bounds(pivot)
-    if p_bounds is None:
-        return None
     exact = base_pkg[pid]
-    snapped_floor = min(p_bounds["max"], max(p_bounds["min"], _snap(pivot, exact, "floor")))
-    snapped_ceil = min(p_bounds["max"], max(p_bounds["min"], _snap(pivot, exact, "ceil")))
-    snapped_values = [snapped_floor] if abs(snapped_floor - snapped_ceil) <= _EPS else [snapped_floor, snapped_ceil]
+    snapped_floor = min(p_bounds["max"], max(p_bounds["min"], _snap(pivot, float(exact), "floor")))
+    snapped_ceil = min(p_bounds["max"], max(p_bounds["min"], _snap(pivot, float(exact), "ceil")))
+    snapped_values = [snapped_floor] if abs(float(snapped_floor) - float(snapped_ceil)) <= _EPS else [snapped_floor, snapped_ceil]
     chosen: Optional[Dict[str, Any]] = None
     for snapped in snapped_values:
         if len(snapped_values) == 1:
             pkg: Optional[Dict[str, float]] = {**base_pkg, pid: snapped}
         else:
-            s_share = min(float(box[pid]["hi"]), max(float(box[pid]["lo"]), _claimant_share(pivot, snapped)))
-            pkg = _nash_on_box(issues, wc, wr, rc, rr, split, {**box, pid: {"lo": s_share, "hi": s_share}})
+            s_share = min(float(box[pid]["hi"]), max(float(box[pid]["lo"]), _claimant_share(pivot, float(snapped))))
+            pkg = _nash_on_box(
+                issues,
+                wc,
+                wr,
+                rc,
+                rr,
+                split,
+                {**box, pid: {"lo": s_share, "hi": s_share, "minVal": snapped, "maxVal": snapped}},
+            )
         if pkg is None:
             continue
         uc = _utility(issues, wc, pkg, "claimant")
@@ -2460,35 +2492,30 @@ def _present_proposal(issues: Sequence[Mapping[str, Any]], basis: Mapping[str, M
     box_r = _share_box_from_limits(issues, basis["respondent"].get("limits")) or _full_share_box(issues)
     joint = _intersect_share_boxes(issues, box_c, box_r)
 
+    # H-09: ALWAYS optimize each viewer's no-zone stand-in over their own box (`box_c` / `box_r`).
+    ur_at_rc = _frontier_max_on_box(issues, wc, wr, rc, "claimant", box_c)
     ur_at_rc_joint = _frontier_max_on_box(issues, wc, wr, rc, "claimant", joint) if joint is not None else -1.0
-    if joint is not None and ur_at_rc_joint >= 0:
-        rr_ref = max(0.0, ur_at_rc_joint - max(0.0, rr - ur_at_rc_joint))
-        for_claimant = _nash_on_box(issues, wc, wr, rc, rr_ref, split, joint) or _nash_on_box(issues, wc, wr, rc, 0.0, split, joint) or dict(basis["claimant"]["walkaway"])
-    else:
-        ur_at_rc = _frontier_max_on_box(issues, wc, wr, rc, "claimant", box_c)
-        box_deficit = sum(
-            float(wr[str(i["id"])]) * max(0.0, box_c[str(i["id"])]["lo"] - box_r[str(i["id"])]["hi"], box_r[str(i["id"])]["lo"] - box_c[str(i["id"])]["hi"])
-            for i in issues
-        )
-        max_uc_joint = _frontier_max_on_box(issues, wr, wc, 0.0, "respondent", joint) if joint is not None else 0.0
-        deficit = max(0.0, rr - ur_at_rc) + box_deficit + (max(0.0, rc - max_uc_joint) if joint is not None else 0.0)
-        rr_ref = max(0.0, ur_at_rc - deficit)
-        for_claimant = _nash_on_box(issues, wc, wr, rc, rr_ref, split, box_c) or _nash_on_box(issues, wc, wr, rc, 0.0, split, box_c) or dict(basis["claimant"]["walkaway"])
+    box_deficit_c = sum(
+        float(wr[str(i["id"])]) * max(0.0, float(box_c[str(i["id"])]["lo"]) - float(box_r[str(i["id"])]["hi"]), float(box_r[str(i["id"])]["lo"]) - float(box_c[str(i["id"])]["hi"]))
+        for i in issues
+    )
+    max_uc_joint = _frontier_max_on_box(issues, wr, wc, 0.0, "respondent", joint) if joint is not None else 0.0
+    joint_deficit_c = 0.0 if joint is None else (max(0.0, rr - ur_at_rc_joint) if ur_at_rc_joint >= 0 else max(0.0, rc - max_uc_joint))
+    deficit_c = max(max(0.0, rr - ur_at_rc), joint_deficit_c) + box_deficit_c
+    rr_ref = max(0.0, ur_at_rc - deficit_c)
+    for_claimant = _nash_on_box(issues, wc, wr, rc, rr_ref, split, box_c) or _nash_on_box(issues, wc, wr, rc, 0.0, split, box_c) or dict(basis["claimant"]["walkaway"])
 
+    uc_at_rr = _frontier_max_on_box(issues, wr, wc, rr, "respondent", box_r)
     uc_at_rr_joint = _frontier_max_on_box(issues, wr, wc, rr, "respondent", joint) if joint is not None else -1.0
-    if joint is not None and uc_at_rr_joint >= 0:
-        rc_ref = max(0.0, uc_at_rr_joint - max(0.0, rc - uc_at_rr_joint))
-        for_respondent = _nash_on_box(issues, wc, wr, rc_ref, rr, split, joint) or _nash_on_box(issues, wc, wr, 0.0, rr, split, joint) or dict(basis["respondent"]["walkaway"])
-    else:
-        uc_at_rr = _frontier_max_on_box(issues, wr, wc, rr, "respondent", box_r)
-        box_deficit = sum(
-            float(wc[str(i["id"])]) * max(0.0, box_c[str(i["id"])]["lo"] - box_r[str(i["id"])]["hi"], box_r[str(i["id"])]["lo"] - box_c[str(i["id"])]["hi"])
-            for i in issues
-        )
-        max_ur_joint = _frontier_max_on_box(issues, wc, wr, 0.0, "claimant", joint) if joint is not None else 0.0
-        deficit = max(0.0, rc - uc_at_rr) + box_deficit + (max(0.0, rr - max_ur_joint) if joint is not None else 0.0)
-        rc_ref = max(0.0, uc_at_rr - deficit)
-        for_respondent = _nash_on_box(issues, wc, wr, rc_ref, rr, split, box_r) or _nash_on_box(issues, wc, wr, 0.0, rr, split, box_r) or dict(basis["respondent"]["walkaway"])
+    box_deficit_r = sum(
+        float(wc[str(i["id"])]) * max(0.0, float(box_c[str(i["id"])]["lo"]) - float(box_r[str(i["id"])]["hi"]), float(box_r[str(i["id"])]["lo"]) - float(box_c[str(i["id"])]["hi"]))
+        for i in issues
+    )
+    max_ur_joint = _frontier_max_on_box(issues, wc, wr, 0.0, "claimant", joint) if joint is not None else 0.0
+    joint_deficit_r = 0.0 if joint is None else (max(0.0, rc - uc_at_rr_joint) if uc_at_rr_joint >= 0 else max(0.0, rr - max_ur_joint))
+    deficit_r = max(max(0.0, rc - uc_at_rr), joint_deficit_r) + box_deficit_r
+    rc_ref = max(0.0, uc_at_rr - deficit_r)
+    for_respondent = _nash_on_box(issues, wc, wr, rc_ref, rr, split, box_r) or _nash_on_box(issues, wc, wr, 0.0, rr, split, box_r) or dict(basis["respondent"]["walkaway"])
 
     return {"views": {"claimant": for_claimant, "respondent": for_respondent}, "settles": False}
 

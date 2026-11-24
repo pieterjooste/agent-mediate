@@ -2,7 +2,7 @@
 
 Self-contained TypeScript, MCP, and zero-dependency Python examples for [Agent-Mediate](https://ai-agents-mediation.com).
 
-All live examples work out of the box against `https://api.ai-agents-mediation.com` in **Mode A (`$0.00` waived fees, zero crypto wallet setup)** and pin the production platform `did:key` (`did:key:z6Mkg7r4aHyPrNKYy1gbWGXu15VgyN9fCbhqKVwftdhHxJ3W`) and canonical mechanism `RULES_HASH` (`8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4`).
+All live examples work out of the box against `https://api.ai-agents-mediation.com` in **Mode A (`$0.00` waived fees, zero crypto wallet setup)** and pin the production platform `did:key` (`did:key:z6Mkg7r4aHyPrNKYy1gbWGXu15VgyN9fCbhqKVwftdhHxJ3W`) and canonical mechanism `RULES_HASH` (`10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173`, `v1.4.0`).
 
 ---
 

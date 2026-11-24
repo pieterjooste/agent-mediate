@@ -1,7 +1,7 @@
 {
   "rules": {
-    "rulesVersion": "1.3.0",
-    "rulesHash": "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4"
+    "rulesVersion": "1.4.0",
+    "rulesHash": "10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173"
   },
   "keys": {
     "seedAHex": "1111111111111111111111111111111111111111111111111111111111111111",
@@ -281,6 +281,148 @@
         "rate": 0.100001,
         "rebate": 0.147115
       }
+    },
+    {
+      "label": "noZoneViewerBoxH09",
+      "opening": {
+        "disputeId": "dsp_conformance_h09",
+        "mode": "salted",
+        "proposalKeyOrSalt": "ac1de801a5ac6ef4fe6a98ef65ca461ea4879fc0ab960e1c7dc03aaa75f29d69",
+        "proposalKeyCommitment": "87c915e22cca48fc0291bc515454f6b74fa3d28f180b410105691cbbb1c61178",
+        "issues": [
+          {
+            "id": "refundUsd",
+            "label": "Refund",
+            "unit": "USD",
+            "min": 0,
+            "max": 1000,
+            "step": 1,
+            "claimantPrefers": "higher",
+            "obligor": "respondent"
+          }
+        ],
+        "expectedIssuesHash": "b273899f57346e0a035096251f1ac237ceba0d910a2d93a10c3ffb746e69e5bf",
+        "declared": {
+          "claimant": {
+            "partySalt": "16d3093fa20b4ba6bf7c7544c7790b6210eb9037d6c3f216703be1793ba1349d",
+            "commitment": "737bd14a027cd77ec898a879f153a0a90ef3d0e6861ef6704f65283c8994bbe5",
+            "private": {
+              "weights": {
+                "refundUsd": 1
+              },
+              "walkaway": {
+                "refundUsd": 400
+              }
+            }
+          },
+          "respondent": {
+            "partySalt": "f97ccc20daf411fa167e60a100ef68366ebec66731ffa0ee4f970a2aed65b06b",
+            "commitment": "e6fbe457c6211905dd668999f684b484152f41aed7e143900f1f45995104fabf",
+            "private": {
+              "weights": {
+                "refundUsd": 1
+              },
+              "walkaway": {
+                "refundUsd": 200
+              },
+              "limits": {
+                "refundUsd": {
+                  "min": 0,
+                  "max": 450
+                }
+              }
+            }
+          }
+        }
+      },
+      "expectedProposal": {
+        "views": {
+          "claimant": {
+            "refundUsd": 514
+          },
+          "respondent": {
+            "refundUsd": 114
+          }
+        },
+        "settles": false
+      },
+      "expectedDeterminationReference": {
+        "refundUsd": 300
+      }
+    },
+    {
+      "label": "usdCentsFractionalH10",
+      "opening": {
+        "disputeId": "dsp_conformance_h10",
+        "mode": "salted",
+        "proposalKeyOrSalt": "d7e7bf988023ecb0c0929b818082948353ada2561bab4d2d3bfb19b0177fb169",
+        "proposalKeyCommitment": "9c195cb65c1cd9a8ea3ccd0751181f0b235aec45abf3060a84164e592dd8ed54",
+        "issues": [
+          {
+            "id": "priceUsd",
+            "label": "Price",
+            "unit": "USD",
+            "min": 100000.01,
+            "max": 110000.01,
+            "step": 0.01,
+            "claimantPrefers": "higher",
+            "obligor": "respondent"
+          }
+        ],
+        "expectedIssuesHash": "0d661114233c2766a38e99f3e1ab01a2cf6f106ff071f6a9ac0247add946cb5e",
+        "declared": {
+          "claimant": {
+            "partySalt": "008d908aba629e9dc39b81da532f020f5b229c3172e4fa8bf76d9f17dccb2379",
+            "commitment": "73b0ce958513f9ac3389d8f69d1b1904cdc73836e7447fe6dbd9a79679e1adfd",
+            "private": {
+              "weights": {
+                "priceUsd": 1
+              },
+              "walkaway": {
+                "priceUsd": 100000.07
+              },
+              "limits": {
+                "priceUsd": {
+                  "min": 100000.07,
+                  "max": 105000.01
+                }
+              }
+            }
+          },
+          "respondent": {
+            "partySalt": "ee88ab1472fe2d9f03dc88e32351780c1b8e8381233b71f24261135d9500b5ec",
+            "commitment": "023dc3924202ca2a4de1916d125fb7434205faa3017007b9a5cfb00cc7583245",
+            "private": {
+              "weights": {
+                "priceUsd": 1
+              },
+              "walkaway": {
+                "priceUsd": 100000.07
+              },
+              "limits": {
+                "priceUsd": {
+                  "min": 100000.01,
+                  "max": 100000.07
+                }
+              }
+            }
+          }
+        }
+      },
+      "expectedProposal": {
+        "views": {
+          "claimant": {
+            "priceUsd": 100000.07
+          },
+          "respondent": {
+            "priceUsd": 100000.07
+          }
+        },
+        "settles": true
+      },
+      "expectedDeterminationReference": {
+        "priceUsd": 100000.07
+      }
     }
   ],
   "clause": {
@@ -290,8 +432,8 @@
       "platform": {
         "did": "did:key:z6Mkg49NtQR2LyYRDCQFK4w1VVHqhypZSSRo7HsyuN7SV7v5",
         "baseUrl": "https://api.mediate.example",
-        "rulesVersion": "1.3.0",
-        "rulesHash": "8d7e67e1145097e3ce20d8828e451db20453d864782c91ccb08be2e9e613cdc4"
+        "rulesVersion": "1.4.0",
+        "rulesHash": "10b48aa0d8a4a71808f5550f951ad128aa0af44b775b2c88c73ddb1dd1cee173"
       },
       "parties": [
         {
@@ -328,12 +470,12 @@
         {
           "partyAgentId": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "signerId": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
-          "signature": "nS/0rsG/4d3SwIi7GZEFGNjBhbXXqG2tz1TJcE7MFc0btObALBrKYj0C+3v6ZTtIcG+nURLa1bD+EwWHGb8dDw=="
+          "signature": "8YxjFWn+CUSHg0WsvJRqFkd2q0hR5N7tFP1p1DcIhgjTZwTA5OrAjtplqhLhibN/y7BT/TzImM2lZFcGCvhxAA=="
         },
         {
           "partyAgentId": "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK",
           "signerId": "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK",
-          "signature": "M7uJxKFsdV8qmtQXN/YRaxmBe1zW5K+KSOB8kPJXqKXKymr9MRzE1kLJVjP2XROj2HwgrQ51cIsxJ5v0L82IAQ=="
+          "signature": "+JukBvhD8dKv2ocP65i+6PkMME6Aq7b0KbqGcc8qrwJOwE8w8/v/QHmmoa8vDSNwVARfZywN8vbDma7pVX1PCQ=="
         }
       ]
     },
