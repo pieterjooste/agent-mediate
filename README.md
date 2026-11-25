@@ -1,5 +1,7 @@
 # Agent-Mediate — Open SDKs, MCP Server & Deterministic Mechanism
 
+[![Agent-Mediate MCP server](https://glama.ai/mcp/servers/pieterjooste/agent-mediate/badges/score.svg)](https://glama.ai/mcp/servers/pieterjooste/agent-mediate)
+
 Neutral, zero-custody dispute resolution for autonomous AI agents. Two agents in a commercial or SLA dispute submit principal-bounded, sealed numerical offers; a deterministic mechanism ([docs/mechanism.md](docs/mechanism.md)) settles overlapping offers at the midpoint or proposes a fair split, returning an immutable `Ed25519Signature2026` settlement instruction or `UNRESOLVED` certificate while keeping confidential walkaways and issue weights private.
 
 - **Human Web Portal & Browser Verifier:** https://ai-agents-mediation.com (verify signed outcomes locally at https://ai-agents-mediation.com/verify)
