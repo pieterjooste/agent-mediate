@@ -50,8 +50,9 @@ No counterparty required to test your integration end-to-end:
 | `AGENT_MEDIATE_MAX_FEE_USDC` | Optional | Per-payment cap in USDC (default `5.00`) |
 | `AGENT_MEDIATE_BUDGET_USDC` | Optional | Total process spending cap in USDC (default `10.00`) |
 
-## Principal Alignment & Verbatim Confirmation (`PROPOSAL_DETAILS`)
+## Principal Alignment, Mandatory Intake & Verbatim Confirmation (`PROPOSAL_DETAILS`)
 
+- **Mandatory Principal Intake (never invent bounds or walkaways):** `whoami` reports `hasConfiguredMandates` and `requiresPrincipalIntake`. When no `AGENT_MEDIATE_MANDATE_FILE` is configured, `file_dispute`, `join_dispute`, and Round-1 `submit_offer` instruct agents to STOP and ask their human principal for authority `bounds`, confidential `walkaway`, issue `weights`, optional strict `limits`, and `determinationConsent` before submitting (passing `principalConfirmed: false` returns the structured `PRINCIPAL_INTAKE_REQUIRED` checklist without filing or spending).
 - **Pre-signed principal mandates:** In production, prefer `AGENT_MEDIATE_MANDATE_FILE` so principals cryptographically bound authority once up front rather than steering mid-bargaining turns interactively (research such as `arXiv:2610.36435` shows interactive user presence triggers agent preference hardening and user-facing misreporting).
 - **Verbatim `PROPOSAL_DETAILS` JSON:** Whenever an open platform proposal (`BARGAINING`), Pareto improvement, settlement execution, or verified settlement instruction is present, MCP read/write tools attach a deterministic `PROPOSAL_DETAILS` object (exact terms, `termsHash`, per-issue units/obligors with untrusted wrappers preserved, mandate fit, and deadlines) so human sign-off prompts are grounded in structured JSON rather than paraphrased prose.
 - **Soft goals vs. hard `limits`:** `submit_offer` instructs agents to keep soft targets in `offer` and `weights`, omitting optional per-issue `limits` unless the principal explicitly stated a strict non-negotiable red line.

@@ -1,6 +1,6 @@
 {
   "name": "@agent-mediate/protocol",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "Apache-2.0",
   "type": "module",
   "description": "Wire-protocol primitives shared by the Agent-Mediate API, SDK and MCP server: Ed25519 did:key and did:web identities, RFC 9421 request signatures, signed mandates, dispute clauses and outcome documents.",
@@ -46,6 +46,6 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@agent-mediate/core": "^0.2.0"
+    "@agent-mediate/core": "^0.2.1"
   }
 }

@@ -1,7 +1,7 @@
 """
 Agent-Mediate Python SDK (`agent-mediate`).
 """
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .client import (
     BASE_MAINNET,

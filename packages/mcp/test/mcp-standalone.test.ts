@@ -329,4 +329,151 @@ describe("MCP standalone server & helper verification (zero server-app imports)"
       await mcpClient.close();
     }
   });
+
+  it("Principal Intake guard (v0.2.1): whoami flags requiresPrincipalIntake, principalConfirmed: false short-circuits with zero HTTP calls, and idempotency key ignores principalConfirmed", async () => {
+    const agentKey = generateAgentKey();
+    const principalKey = generateAgentKey();
+    const respondentKey = generateAgentKey();
+    const platformKey = generateAgentKey();
+    const now = 1_800_000_000_000;
+    const seenRequests: Array<{ url: string; idempotencyKey: string | null }> = [];
+
+    const mkClient = () =>
+      new AgentMediateClient({
+        baseUrl: "https://api.mediate.example",
+        agentKey,
+        platformDid: platformKey.did,
+        expectedRulesHash: RULES_HASH,
+        now: () => now,
+        fetch: async (url, init) => {
+          const headers = new Headers(init?.headers);
+          seenRequests.push({ url: String(url), idempotencyKey: headers.get("idempotency-key") });
+          if (String(url).endsWith("/v1/platform")) {
+            return new Response(
+              JSON.stringify({
+                did: platformKey.did,
+                rulesVersion: RULES_VERSION,
+                rulesHash: RULES_HASH,
+                fees: { waived: true },
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              disputeId: "dsp_intake_1",
+              view: { disputeId: "dsp_intake_1", status: "AWAITING_RESPONDENT", you: "claimant" },
+            }),
+            { status: 201, headers: { "content-type": "application/json" } },
+          );
+        },
+      });
+
+    // 1. Unconfigured mandates -> whoami reports requiresPrincipalIntake: true
+    const serverNoMandates = createMcpServer(mkClient(), { expectedRulesHash: RULES_HASH, now: () => now });
+    const [c1, s1] = InMemoryTransport.createLinkedPair();
+    const client1 = new Client({ name: "intake-no-mandate-test", version: "1.0.0" });
+    await Promise.all([client1.connect(c1), serverNoMandates.connect(s1)]);
+    try {
+      const who1 = (await client1.callTool({ name: "whoami", arguments: {} })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.notEqual(who1.isError, true);
+      const who1Data = JSON.parse(who1.content[0]!.text);
+      assert.equal(who1Data.hasConfiguredMandates, false);
+      assert.equal(who1Data.requiresPrincipalIntake, true);
+
+      // Tool schema checks
+      const listed = await client1.listTools();
+      const fileTool = listed.tools.find((t) => t.name === "file_dispute");
+      const joinTool = listed.tools.find((t) => t.name === "join_dispute");
+      const offerTool = listed.tools.find((t) => t.name === "submit_offer");
+      assert.ok(fileTool && joinTool && offerTool);
+      assert.doesNotMatch(fileTool.description ?? "", /act as your own principal/i);
+      for (const tool of [fileTool, joinTool, offerTool]) {
+        const props = tool.inputSchema.properties as Record<string, unknown>;
+        assert.ok("principalConfirmed" in props, `${tool.name} exposes principalConfirmed`);
+      }
+
+      // Short-circuit all three mutating entry points with principalConfirmed: false -> zero HTTP calls
+      const callsBefore = seenRequests.length;
+      const baseFileArgs = {
+        respondentId: respondentKey.did,
+        contractHash: "c".repeat(64),
+        claimSummary: "Late delivery",
+        requestedRemedy: "Partial refund",
+        proposedIssues: [
+          { id: "refundUsd", label: "Refund", unit: "USD", min: 0, max: 500, step: 10, claimantPrefers: "higher", obligor: "respondent" },
+        ],
+        bounds: { refundUsd: { min: 100, max: 500 } },
+      };
+
+      const fileBlocked = (await client1.callTool({
+        name: "file_dispute",
+        arguments: { ...baseFileArgs, principalConfirmed: false },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      const joinBlocked = (await client1.callTool({
+        name: "join_dispute",
+        arguments: { disputeId: "dsp_intake_1", bounds: { refundUsd: { min: 0, max: 300 } }, principalConfirmed: false },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+      const offerBlocked = (await client1.callTool({
+        name: "submit_offer",
+        arguments: { disputeId: "dsp_intake_1", round: 1, offer: { refundUsd: 250 }, principalConfirmed: false },
+      })) as { content: Array<{ text: string }>; isError?: boolean };
+
+      assert.equal(seenRequests.length, callsBefore, "principalConfirmed: false must make zero HTTP requests");
+      for (const blocked of [fileBlocked, joinBlocked, offerBlocked]) {
+        assert.equal(blocked.isError, true);
+        const body = JSON.parse(blocked.content[0]!.text);
+        assert.equal(body.code, "PRINCIPAL_INTAKE_REQUIRED");
+        assert.equal(Array.isArray(body.questionsForPrincipal), true);
+        assert.equal(body.questionsForPrincipal.length, 4);
+      }
+
+      // Calling file_dispute with principalConfirmed: true vs omitted produces identical Idempotency-Key
+      const fileWithTrue = (await client1.callTool({
+        name: "file_dispute",
+        arguments: { ...baseFileArgs, principalConfirmed: true },
+      })) as { isError?: boolean };
+      const fileOmitted = (await client1.callTool({
+        name: "file_dispute",
+        arguments: baseFileArgs,
+      })) as { isError?: boolean };
+      assert.notEqual(fileWithTrue.isError, true);
+      assert.notEqual(fileOmitted.isError, true);
+      const postKeys = seenRequests.filter((r) => new URL(r.url).pathname === "/v1/disputes").map((r) => r.idempotencyKey);
+      assert.equal(postKeys.length, 2);
+      assert.equal(postKeys[0], postKeys[1], "principalConfirmed must not perturb file_dispute Idempotency-Key");
+    } finally {
+      await client1.close();
+    }
+
+    // 2. Configured mandates -> whoami reports hasConfiguredMandates: true, requiresPrincipalIntake: false
+    const mandate = signMandate(
+      {
+        id: "mnd_intake_1",
+        principalId: principalKey.did,
+        agentId: agentKey.did,
+        bounds: { refundUsd: { min: 100, max: 500 } },
+        issuedAt: now - 1_000,
+        expiresAt: now + 86_400_000,
+      },
+      principalKey,
+    );
+    const serverWithMandate = createMcpServer(mkClient(), {
+      mandates: [mandate],
+      expectedRulesHash: RULES_HASH,
+      now: () => now,
+    });
+    const [c2, s2] = InMemoryTransport.createLinkedPair();
+    const client2 = new Client({ name: "intake-with-mandate-test", version: "1.0.0" });
+    await Promise.all([client2.connect(c2), serverWithMandate.connect(s2)]);
+    try {
+      const who2 = (await client2.callTool({ name: "whoami", arguments: {} })) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.notEqual(who2.isError, true);
+      const who2Data = JSON.parse(who2.content[0]!.text);
+      assert.equal(who2Data.hasConfiguredMandates, true);
+      assert.equal(who2Data.requiresPrincipalIntake, false);
+    } finally {
+      await client2.close();
+    }
+  });
 });

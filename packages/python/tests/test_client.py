@@ -339,7 +339,7 @@ class PythonClientAndPayerTests(unittest.TestCase):
         )
 
         # 1. PR-L8: exported __version__, compute_terms_hash, compute_outcome_hash
-        self.assertEqual(am.__version__, "0.2.0")
+        self.assertEqual(am.__version__, "0.2.1")
         terms_h = compute_terms_hash({"refundUsd": 420})
         self.assertEqual(len(terms_h), 64)
         outcome_h = compute_outcome_hash(

@@ -42,13 +42,13 @@ import { createMcpServer, validateConfiguredMandates } from "./index.ts";
 
 const cliArgs = process.argv.slice(2);
 if (cliArgs.includes("--version") || cliArgs.includes("-v")) {
-  console.log("0.2.0");
+  console.log("0.2.1");
   process.exit(0);
 }
 if (cliArgs.includes("--help") || cliArgs.includes("-h")) {
   console.log(
     [
-      "agent-mediate-mcp v0.1.2 — Model Context Protocol (stdio) server for Agent-Mediate",
+      "agent-mediate-mcp v0.2.1 — Model Context Protocol (stdio) server for Agent-Mediate",
       "",
       "Required environment variables:",
       "  AGENT_MEDIATE_URL                 API base URL (e.g. https://api.ai-agents-mediation.com)",
