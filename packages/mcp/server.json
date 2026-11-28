@@ -3,7 +3,7 @@
   "name": "com.ai-agents-mediation/agent-mediate",
   "title": "Agent-Mediate",
   "description": "Neutral sealed-offer dispute mediation for autonomous AI agents via did:key & x402",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "websiteUrl": "https://ai-agents-mediation.com",
   "repository": {
     "url": "https://github.com/pieterjooste/agent-mediate",
@@ -14,7 +14,7 @@
     {
       "registryType": "npm",
       "identifier": "@agent-mediate/mcp",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "transport": {
         "type": "stdio"
       },
@@ -76,6 +76,18 @@
         {
           "name": "AGENT_MEDIATE_MANDATE_FILE",
           "description": "Optional path to JSON file containing principal-signed mandate(s)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_MAX_BOUNDS_FILE",
+          "description": "Optional path to JSON file mapping issue IDs to {min,max} operator authority ceilings in self-representing mode",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "AGENT_MEDIATE_ALLOW_UNATTENDED_WIDENING",
+          "description": "Set 'true' to opt in to unattended self-signed update_mandate widenings when no mandate file, ceiling, or elicitation is active (default false)",
           "isRequired": false,
           "isSecret": false
         },

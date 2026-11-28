@@ -75,6 +75,9 @@ jobs:
       - name: Install dependencies (lifecycle scripts disabled)
         run: npm ci --ignore-scripts
 
+      - name: Audit production npm dependencies (IT5-P2-2)
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Verify publishable workspace tarballs and exports
         run: npm pack --dry-run -w @agent-mediate/core -w @agent-mediate/protocol -w @agent-mediate/sdk -w @agent-mediate/mcp
 
@@ -86,6 +89,10 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # T5-P2-1: protected GitHub Environment bound to npm & PyPI Trusted Publishers (requires manual reviewer approval).
+    environment:
+      name: release
+      url: https://www.npmjs.com/package/@agent-mediate/mcp
     permissions:
       contents: read
       id-token: write

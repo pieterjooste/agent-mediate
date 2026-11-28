@@ -98,7 +98,16 @@ export interface PlatformInfo {
   requestSignatures?: string;
   documentProof?: string;
   fees: { payTo: string; network: string; fullFeeAtomic: string } | { waived: true };
-  practiceBot?: { did: string; role: string };
+  practiceBot?: {
+    did: string;
+    role: string;
+    active?: boolean;
+    feeFree?: boolean;
+    nonBinding?: boolean;
+    honoursEligible?: boolean;
+    description?: string;
+    claimantSteps?: string[];
+  };
   termsOfService?: string;
   privacyPolicy?: string;
 }
@@ -311,6 +320,8 @@ export interface HonoursRollEntry {
   confirmedByCounterpartyCount: number;
   distinctCounterparties: number;
   verifiedDomainCounterparties: number;
+  distinctHonoredWeeks?: number;
+  standingStrength?: "basic" | "domain-corroborated";
   curedLateCount: number;
   fulfilmentRate: 1;
   lastHonoredAt: number;
@@ -333,6 +344,9 @@ export interface HonoursDirectory {
     domainVerificationRequired: true;
     permanentKeyDomainBinding: true;
     pairDeduplicationWindowDays: 30;
+    minDistinctCounterparties?: number;
+    minDistinctWeeks?: number;
+    excludesPracticeBot?: true;
     excludesZeroObligationSettlements: true;
     requiresZeroBreachesAndZeroVerifiedNoShows: true;
     cureCooldownDays: 30;
@@ -366,12 +380,14 @@ export interface MyHonoursSettings {
   standing: {
     listed: boolean;
     inGoodStanding: boolean;
+    standingStrength?: "basic" | "domain-corroborated" | null;
     disqualifiers: string[];
     qualifiedHonoredCount: number;
     totalHonoredObligations: number;
     confirmedByCounterpartyCount: number;
     distinctCounterparties: number;
     verifiedDomainCounterparties: number;
+    distinctHonoredWeeks?: number;
     defaultedBreachCount: number;
     uncuredBreachCount: number;
     curedLateCount: number;
@@ -443,12 +459,15 @@ export interface InviteCreated {
   delivery: NoticeDelivery;
 }
 
+export type InviteRespondentIdentity = "bound" | "domain_verified" | "unverified";
+
 export interface InviteStatus {
   inviteId: string;
   role: "claimant" | "respondent";
   status: "PENDING" | "ACCEPTED" | "FILED" | "EXPIRED";
   claimantId: string;
   respondentId: string | null;
+  respondentIdentity?: InviteRespondentIdentity | null;
   contractHash: string;
   summary: string;
   createdAt: number;
@@ -472,6 +491,7 @@ export interface InviteAccepted {
   status: "ACCEPTED";
   claimantId: string;
   respondentId: string;
+  respondentIdentity?: InviteRespondentIdentity;
   contractHash: string;
   summary: string;
   acceptedAt: number;
@@ -2370,6 +2390,91 @@ export class AgentMediateClient<DefaultView extends ViewOption = "full"> {
       return json as T;
     }
   }
+}
+
+export interface WebhookReplayGuardOptions {
+  /** Nonce retention window in milliseconds (default `600_000` = 10 minutes, 2x the +/-300s RFC 9421 skew window). */
+  ttlMs?: number;
+  /** Maximum tracked nonces before oldest entries are evicted (default `10_000`). */
+  maxEntries?: number;
+  /** Clock override in Unix ms (defaults to `Date.now`). */
+  now?: () => number;
+}
+
+export interface WebhookReplayGuard {
+  /** Record a verified webhook nonce and return `true` on first sight or `false` on replay within `ttlMs`. */
+  check(nonceOrVerified: string | { nonce: string; created?: number }, nowMs?: number): boolean;
+  /** Verify a webhook signature via `AgentMediateClient.verifyWebhook` and reject replayed nonces within `ttlMs` (`IT6-P2-1`). */
+  verify(
+    req: { url: string; headers: Record<string, string>; body: string },
+    platformDid: string,
+    opts?: number | VerifyWebhookOptions,
+  ): VerifiedWebhook;
+  /** Number of currently remembered nonces (excluding expired entries after pruning). */
+  size(): number;
+  /** Forget all remembered nonces. */
+  clear(): void;
+}
+
+/**
+ * Bounded in-memory RFC 9421 webhook nonce replay guard (`IT6-P2-1`).
+ * Pair with `AgentMediateClient.verifyWebhook` (or call `guard.verify(...)` directly) so captured platform
+ * webhook deliveries cannot be replayed within the 5-minute signature clock-skew window.
+ */
+export function createWebhookReplayGuard(opts: WebhookReplayGuardOptions = {}): WebhookReplayGuard {
+  const ttlMs = opts.ttlMs ?? 600_000;
+  const maxEntries = opts.maxEntries ?? 10_000;
+  const clock = opts.now ?? Date.now;
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+    throw new Error("WebhookReplayGuard ttlMs must be a positive number");
+  }
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
+    throw new Error("WebhookReplayGuard maxEntries must be a positive safe integer");
+  }
+  const seen = new Map<string, number>();
+  const prune = (nowMs: number): void => {
+    for (const [k, exp] of seen) {
+      if (exp <= nowMs) {
+        seen.delete(k);
+      } else {
+        break;
+      }
+    }
+  };
+  const check = (nonceOrVerified: string | { nonce: string; created?: number }, nowMs?: number): boolean => {
+    const nonce = typeof nonceOrVerified === "string" ? nonceOrVerified : nonceOrVerified?.nonce;
+    if (typeof nonce !== "string" || nonce.length === 0) return false;
+    const t = nowMs ?? clock();
+    prune(t);
+    const existing = seen.get(nonce);
+    if (existing !== undefined && existing > t) return false;
+    if (existing !== undefined) seen.delete(nonce);
+    while (seen.size >= maxEntries) {
+      const oldest = seen.keys().next().value;
+      if (oldest === undefined) break;
+      seen.delete(oldest);
+    }
+    seen.set(nonce, t + ttlMs);
+    return true;
+  };
+  const verify: WebhookReplayGuard["verify"] = (req, platformDid, verifyOpts = {}) => {
+    const verified = AgentMediateClient.verifyWebhook(req, platformDid, verifyOpts);
+    if (!verified.ok) return verified;
+    const t = typeof verifyOpts === "number" ? verifyOpts : (verifyOpts.now ?? clock());
+    if (!check(verified, t)) {
+      return { ok: false, reason: "replayed webhook nonce" };
+    }
+    return verified;
+  };
+  return {
+    check,
+    verify,
+    size: () => {
+      prune(clock());
+      return seen.size;
+    },
+    clear: () => seen.clear(),
+  };
 }
 
 /** sha256 hex of evidence content (the content itself is never uploaded). */

@@ -1,7 +1,7 @@
 """
 Agent-Mediate Python SDK (`agent-mediate`).
 """
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 from .client import (
     BASE_MAINNET,
@@ -16,8 +16,10 @@ from .client import (
     PaymentPolicyError,
     PaymentRequiredError,
     TransportLike,
+    WebhookReplayGuard,
     X402Payer,
     content_hash,
+    create_webhook_replay_guard,
     create_x402_payer,
     discover_respondent,
     is_public_ip_address,
@@ -145,6 +147,7 @@ __all__ = [
     "TransportLike",
     "USDC_ON_BASE",
     "WEBHOOK_SIGNATURE_TAG",
+    "WebhookReplayGuard",
     "X402Payer",
     "agent_key_from_pem",
     "agent_key_from_seed",
@@ -163,6 +166,7 @@ __all__ = [
     "content_digest",
     "content_hash",
     "contract_hash",
+    "create_webhook_replay_guard",
     "create_x402_payer",
     "decode_base_anchor_calldata",
     "default_platform_key_id",

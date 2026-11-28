@@ -30,9 +30,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from encodings import idna as _stdlib_idna
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from types import MappingProxyType
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
 from .crypto import AgentKey, is_did_key
 from .jcs import canonical_json, loads_jcs_json, sha256_hex
@@ -72,10 +74,12 @@ _SETTLEMENT_METHODS = ("PROPOSAL_ACCEPTED", "OVERLAP_MIDPOINT", "FINAL_OFFER_DET
 
 PRODUCTION_API_URL = "https://api.ai-agents-mediation.com"
 PRODUCTION_APEX_URL = "https://ai-agents-mediation.com"
-# Out-of-band pinned production platform signing DIDs by normalised API base URL (SEC3-8 / H-1 / P1-1).
-DEFAULT_PRODUCTION_PLATFORM_DIDS: Dict[str, str] = {
-    PRODUCTION_API_URL: "did:key:z6Mkg7r4aHyPrNKYy1gbWGXu15VgyN9fCbhqKVwftdhHxJ3W",
-}
+# Out-of-band pinned production platform signing DIDs by normalised API base URL (SEC3-8 / H-1 / P1-1 / T4-P2-3).
+DEFAULT_PRODUCTION_PLATFORM_DIDS: Mapping[str, str] = MappingProxyType(
+    {
+        PRODUCTION_API_URL: "did:key:z6Mkg7r4aHyPrNKYy1gbWGXu15VgyN9fCbhqKVwftdhHxJ3W",
+    }
+)
 
 
 def normalize_base_url(raw_url: str) -> str:
@@ -3140,6 +3144,13 @@ def discover_respondent(
 
     respondent_id: Optional[str] = None
     verified_standing = False
+    standing: Dict[str, Any] = {
+        "listed": False,
+        "strength": "none",
+        "qualifiedHonoredCount": 0,
+        "distinctCounterparties": 0,
+        "verifiedDomainCounterparties": 0,
+    }
     has_verified_notice_channel = False
     contact: Dict[str, str] = {}
     if initial_did_web:
@@ -3230,6 +3241,36 @@ def discover_respondent(
                             if first_did:
                                 respondent_id = first_did
                                 verified_standing = True
+                                q_count = doc.get("qualifiedHonoredCount")
+                                qualified_honored = (
+                                    q_count
+                                    if (isinstance(q_count, int) and not isinstance(q_count, bool) and q_count >= 0)
+                                    else 0
+                                )
+                                d_cp = doc.get("distinctCounterparties")
+                                distinct_cp = (
+                                    d_cp
+                                    if (isinstance(d_cp, int) and not isinstance(d_cp, bool) and d_cp >= 0)
+                                    else 0
+                                )
+                                vd_cp = doc.get("verifiedDomainCounterparties")
+                                verified_domain_cp = (
+                                    vd_cp
+                                    if (isinstance(vd_cp, int) and not isinstance(vd_cp, bool) and vd_cp >= 0)
+                                    else 0
+                                )
+                                strength = (
+                                    "domain-corroborated"
+                                    if (doc.get("standingStrength") == "domain-corroborated" or verified_domain_cp >= 1)
+                                    else "basic"
+                                )
+                                standing = {
+                                    "listed": True,
+                                    "strength": strength,
+                                    "qualifiedHonoredCount": qualified_honored,
+                                    "distinctCounterparties": distinct_cp,
+                                    "verifiedDomainCounterparties": verified_domain_cp,
+                                }
                                 if isinstance(doc.get("didWeb"), str) and str(doc["didWeb"]).startswith("did:web:"):
                                     contact["didWeb"] = str(doc["didWeb"])
                                 add_source("honours")
@@ -3399,7 +3440,119 @@ def discover_respondent(
         "respondentId": respondent_id,
         "respondentContact": contact,
         "verifiedStanding": verified_standing,
+        "standing": standing,
         "hasVerifiedNoticeChannel": has_verified_notice_channel,
         "recommendedAction": recommended_action,
         "sources": sources,
     }
+
+
+class WebhookReplayGuard:
+    """
+    Bounded, thread-safe in-memory RFC 9421 webhook nonce replay guard (`IT6-P2-1`).
+    Pair with ``AgentMediateClient.verify_webhook`` (or call ``guard.verify(...)`` directly) so
+    captured platform webhook deliveries cannot be replayed within the 5-minute clock-skew window.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_ms: int = 600_000,
+        max_entries: int = 10_000,
+        now_ms: Optional[Callable[[], int]] = None,
+    ) -> None:
+        if isinstance(ttl_ms, bool) or not isinstance(ttl_ms, (int, float)) or not math.isfinite(ttl_ms) or ttl_ms <= 0:
+            raise ValueError("WebhookReplayGuard ttl_ms must be a positive number")
+        if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries < 1:
+            raise ValueError("WebhookReplayGuard max_entries must be a positive integer")
+        self._ttl_ms = int(ttl_ms)
+        self._max_entries = max_entries
+        self._now_ms = now_ms or (lambda: int(time.time() * 1000))
+        self._seen: "OrderedDict[str, int]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _prune_locked(self, now_ts: int) -> None:
+        while self._seen:
+            first_key = next(iter(self._seen))
+            if self._seen[first_key] <= now_ts:
+                self._seen.popitem(last=False)
+            else:
+                break
+
+    def check(
+        self,
+        nonce_or_verified: Union[str, Mapping[str, Any]],
+        *,
+        now_ms: Optional[int] = None,
+    ) -> bool:
+        nonce = (
+            nonce_or_verified
+            if isinstance(nonce_or_verified, str)
+            else (nonce_or_verified.get("nonce") if isinstance(nonce_or_verified, Mapping) else None)
+        )
+        if not isinstance(nonce, str) or not nonce:
+            return False
+        t = now_ms if now_ms is not None else self._now_ms()
+        with self._lock:
+            self._prune_locked(t)
+            existing = self._seen.get(nonce)
+            if existing is not None and existing > t:
+                return False
+            if existing is not None:
+                del self._seen[nonce]
+            while len(self._seen) >= self._max_entries:
+                self._seen.popitem(last=False)
+            self._seen[nonce] = t + self._ttl_ms
+            return True
+
+    def verify(
+        self,
+        *,
+        url: str,
+        headers: Mapping[str, str],
+        body: str,
+        platform_did: str,
+        now_ms: Optional[int] = None,
+        agent_id: Optional[str] = None,
+        allow_unbound_invite: bool = False,
+        dispute_id: Optional[str] = None,
+        invite_id: Optional[str] = None,
+        key_history: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        resolved_now_ms = now_ms if now_ms is not None else self._now_ms()
+        verified = AgentMediateClient.verify_webhook(
+            url=url,
+            headers=headers,
+            body=body,
+            platform_did=platform_did,
+            now_ms=resolved_now_ms,
+            agent_id=agent_id,
+            allow_unbound_invite=allow_unbound_invite,
+            dispute_id=dispute_id,
+            invite_id=invite_id,
+            key_history=key_history,
+        )
+        if not verified.get("ok"):
+            return verified
+        if not self.check(verified, now_ms=resolved_now_ms):
+            return {"ok": False, "reason": "replayed webhook nonce"}
+        return verified
+
+    def size(self) -> int:
+        with self._lock:
+            self._prune_locked(self._now_ms())
+            return len(self._seen)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+
+def create_webhook_replay_guard(
+    *,
+    ttl_ms: int = 600_000,
+    max_entries: int = 10_000,
+    now_ms: Optional[Callable[[], int]] = None,
+) -> WebhookReplayGuard:
+    """Create a bounded in-memory RFC 9421 webhook nonce replay guard (`IT6-P2-1`)."""
+    return WebhookReplayGuard(ttl_ms=ttl_ms, max_entries=max_entries, now_ms=now_ms)

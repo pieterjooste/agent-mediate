@@ -339,7 +339,7 @@ class PythonClientAndPayerTests(unittest.TestCase):
         )
 
         # 1. PR-L8: exported __version__, compute_terms_hash, compute_outcome_hash
-        self.assertEqual(am.__version__, "0.2.1")
+        self.assertEqual(am.__version__, "0.2.2")
         terms_h = compute_terms_hash({"refundUsd": 420})
         self.assertEqual(len(terms_h), 64)
         outcome_h = compute_outcome_hash(
@@ -1571,6 +1571,147 @@ class PythonClientAndPayerTests(unittest.TestCase):
                 k_new.did,
             )
         )
+
+    def test_v0_2_2_security_hardening_python_parity(self) -> None:
+        """T4-P2-3, IT1-P1-1, IT6-P2-1: frozen DEFAULT_PRODUCTION_PLATFORM_DIDS, graded standing, and WebhookReplayGuard."""
+        import agent_mediate as am
+
+        # 1. T4-P2-3: DEFAULT_PRODUCTION_PLATFORM_DIDS is immutable (MappingProxyType)
+        with self.assertRaises(TypeError):
+            am.DEFAULT_PRODUCTION_PLATFORM_DIDS["https://evil.example"] = "did:key:z6MkFake"  # type: ignore[index]
+
+        # 2. IT6-P2-1: create_webhook_replay_guard rejects replays within TTL and ignores forged requests
+        platform = generate_agent_key()
+        attacker = generate_agent_key()
+        respondent = generate_agent_key()
+        clock = [1_800_000_000_000]
+        guard = am.create_webhook_replay_guard(ttl_ms=600_000, max_entries=2, now_ms=lambda: clock[0])
+        hook_url = "https://receiver.example/webhook"
+        body = json.dumps(
+            {
+                "type": "DISPUTE_FILED",
+                "disputeId": "dsp_py_replay_1",
+                "seq": 1,
+                "at": clock[0],
+                "recipient": {"party": "respondent", "agentId": respondent.did},
+            }
+        )
+
+        def make_headers(key: Any, nonce: str) -> Dict[str, str]:
+            return {
+                "content-type": "application/json",
+                **sign_request(
+                    method="POST",
+                    target_uri=hook_url,
+                    headers={"content-type": "application/json"},
+                    body=body,
+                    key=key,
+                    created=clock[0] // 1000,
+                    nonce=nonce,
+                    tag=WEBHOOK_SIGNATURE_TAG,
+                ),
+            }
+
+        forged = guard.verify(
+            url=hook_url,
+            headers=make_headers(attacker, "py-forged-nonce-0001"),
+            body=body,
+            platform_did=platform.did,
+            agent_id=respondent.did,
+        )
+        self.assertFalse(forged["ok"])
+        self.assertEqual(guard.size(), 0)
+
+        h1 = make_headers(platform, "py-valid-nonce-0001")
+        v1 = guard.verify(url=hook_url, headers=h1, body=body, platform_did=platform.did, agent_id=respondent.did)
+        self.assertTrue(v1["ok"])
+        replay = guard.verify(url=hook_url, headers=h1, body=body, platform_did=platform.did, agent_id=respondent.did)
+        self.assertFalse(replay["ok"])
+        self.assertIn("replayed webhook nonce", str(replay.get("reason")))
+        self.assertTrue(guard.check("py-valid-2"))
+        self.assertTrue(guard.check("py-valid-3"))
+        self.assertEqual(guard.size(), 2)
+        clock[0] += 600_001
+        self.assertEqual(guard.size(), 0)
+
+        # 3. IT1-P1-1: discover_respondent returns graded standing ("none" / "basic" / "domain-corroborated")
+        def make_honours_payload(verified_domain_cp: int, strength: str) -> str:
+            doc = {
+                "type": HONOURS_ATTESTATION_TYPE,
+                "rulesVersion": RULES_VERSION,
+                "rulesHash": RULES_HASH,
+                "environment": "development",
+                "domain": "graded-py.example",
+                "didWeb": "did:web:graded-py.example",
+                "agentIds": [respondent.did],
+                "memberSince": clock[0] - 30 * 86_400_000,
+                "verifiedAt": clock[0],
+                "qualifiedHonoredCount": 3,
+                "totalHonoredObligations": 3,
+                "confirmedByCounterpartyCount": 3,
+                "distinctCounterparties": 3,
+                "verifiedDomainCounterparties": verified_domain_cp,
+                "standingStrength": strength,
+                "curedLateCount": 0,
+                "fulfilmentRate": 1,
+                "lastHonoredAt": clock[0] - 1_000,
+                "issuedAt": clock[0],
+            }
+            return json.dumps(
+                {
+                    "subject": "graded-py.example",
+                    "listed": True,
+                    "inGoodStanding": True,
+                    "checkedAt": clock[0],
+                    "entry": {
+                        "domain": "graded-py.example",
+                        "didWeb": "did:web:graded-py.example",
+                        "agentIds": [respondent.did],
+                        "fulfilmentRate": 1,
+                    },
+                    "signedAttestation": sign_document(
+                        doc,
+                        platform,
+                        created_ms=clock[0],
+                        expires_at_ms=clock[0] + 24 * 3_600_000,
+                    ),
+                }
+            )
+
+        basic_res = am.discover_respondent(
+            "graded-py.example",
+            base_url="https://api.mediate.example",
+            platform_did=platform.did,
+            expected_environment="development",
+            expected_rules_hash=RULES_HASH,
+            now_ms=lambda: clock[0],
+            resolve_host=lambda _h: ["93.184.216.34"],
+            transport=lambda _m, _u, _h, _b: HttpResponse(404, {}, ""),
+            api_transport=lambda _m, _u, _h, _b: HttpResponse(200, {"content-type": "application/json"}, make_honours_payload(0, "basic")),
+        )
+        self.assertEqual(
+            basic_res["standing"],
+            {
+                "listed": True,
+                "strength": "basic",
+                "qualifiedHonoredCount": 3,
+                "distinctCounterparties": 3,
+                "verifiedDomainCounterparties": 0,
+            },
+        )
+        corrob_res = am.discover_respondent(
+            "graded-py.example",
+            base_url="https://api.mediate.example",
+            platform_did=platform.did,
+            expected_environment="development",
+            expected_rules_hash=RULES_HASH,
+            now_ms=lambda: clock[0],
+            resolve_host=lambda _h: ["93.184.216.34"],
+            transport=lambda _m, _u, _h, _b: HttpResponse(404, {}, ""),
+            api_transport=lambda _m, _u, _h, _b: HttpResponse(200, {"content-type": "application/json"}, make_honours_payload(1, "domain-corroborated")),
+        )
+        self.assertEqual(corrob_res["standing"]["strength"], "domain-corroborated")
+        self.assertEqual(corrob_res["standing"]["verifiedDomainCounterparties"], 1)
 
 
 if __name__ == "__main__":

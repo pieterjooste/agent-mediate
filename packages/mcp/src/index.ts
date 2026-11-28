@@ -677,6 +677,44 @@ function markPaymentRequired(challenge: unknown, depth = 0): unknown {
   return out;
 }
 
+/** Validate operator-configured per-issue authority ceiling loaded from `AGENT_MEDIATE_MAX_BOUNDS_FILE` (`IT6-P1-1`). */
+export function validateMaxBoundsCeiling(raw: unknown): Record<string, { min: number; max: number }> {
+  if (!isPlainRecord(raw)) {
+    throw new Error("AGENT_MEDIATE_MAX_BOUNDS_FILE must be a JSON object mapping issue IDs to { min, max }");
+  }
+  const ownKeys = Object.getOwnPropertyNames(raw);
+  if (ownKeys.length === 0) {
+    throw new Error("AGENT_MEDIATE_MAX_BOUNDS_FILE must define at least one issue ceiling");
+  }
+  const out: Record<string, { min: number; max: number }> = {};
+  for (const k of ownKeys) {
+    if (FORBIDDEN_PROTO_KEYS.has(k) || !k.trim()) {
+      throw new Error(`AGENT_MEDIATE_MAX_BOUNDS_FILE contains invalid issue key "${k}"`);
+    }
+    const entry = raw[k];
+    if (!isPlainRecord(entry)) {
+      throw new Error(`AGENT_MEDIATE_MAX_BOUNDS_FILE["${k}"] must be an object { min, max }`);
+    }
+    const entryKeys = Object.getOwnPropertyNames(entry);
+    for (const ek of entryKeys) {
+      if (ek !== "min" && ek !== "max") {
+        throw new Error(`AGENT_MEDIATE_MAX_BOUNDS_FILE["${k}"] has unexpected property "${ek}"`);
+      }
+    }
+    if (
+      typeof entry.min !== "number" ||
+      typeof entry.max !== "number" ||
+      !Number.isFinite(entry.min) ||
+      !Number.isFinite(entry.max) ||
+      entry.min > entry.max
+    ) {
+      throw new Error(`AGENT_MEDIATE_MAX_BOUNDS_FILE["${k}"] must have finite numbers with min <= max`);
+    }
+    out[k] = { min: entry.min, max: entry.max };
+  }
+  return out;
+}
+
 /** Validate principal-signed mandates loaded from `AGENT_MEDIATE_MANDATE_FILE` (`FS-M15`). */
 export function validateConfiguredMandates(mandates: Mandate[], agentDid: string, now = Date.now()): void {
   if (!Array.isArray(mandates) || mandates.length === 0) {
@@ -777,8 +815,49 @@ const run = (fn: () => Promise<unknown>) => async (): Promise<ToolResult> => {
   }
 };
 
-/** Like run, for tools returning a dispute response: untrusted strings are wrapped (security review M12). */
-const runMarked = (fn: () => Promise<unknown>) => run(async () => markDisputeResponse(await fn()));
+const MAX_TRACKED_DISPUTE_VIEWS = 128;
+
+function disputeViewFingerprint(v: {
+  status?: unknown;
+  nextActions?: unknown;
+  nextDeadline?: unknown;
+  evidence?: unknown;
+  bargaining?: { round?: unknown; openProposal?: unknown; yourCurrentSubmission?: unknown } | null;
+  issueNegotiation?: {
+    proposalCount?: unknown;
+    proposedHash?: unknown;
+    youConfirmed?: unknown;
+    counterpartConfirmed?: unknown;
+  } | null;
+  determination?: { yourFinalOffer?: unknown } | null;
+  outcome?: unknown;
+  execution?: {
+    proofs?: unknown;
+    confirmed?: unknown;
+    contested?: unknown;
+    improvement?: { status?: unknown } | null;
+  } | null;
+}): string {
+  return JSON.stringify([
+    v.status ?? null,
+    Array.isArray(v.nextActions) ? v.nextActions : null,
+    v.nextDeadline ?? null,
+    Array.isArray(v.evidence) ? v.evidence.length : null,
+    v.bargaining?.round ?? null,
+    v.bargaining?.openProposal ?? null,
+    v.bargaining ? v.bargaining.yourCurrentSubmission === null : null,
+    v.issueNegotiation?.proposalCount ?? null,
+    v.issueNegotiation?.proposedHash ?? null,
+    v.issueNegotiation?.youConfirmed ?? null,
+    v.issueNegotiation?.counterpartConfirmed ?? null,
+    v.determination ? v.determination.yourFinalOffer === null : null,
+    v.outcome ?? null,
+    v.execution?.proofs ?? null,
+    v.execution?.confirmed ?? null,
+    v.execution?.contested ?? null,
+    v.execution?.improvement?.status ?? null,
+  ]);
+}
 
 function normalizeUrlForHash(raw: unknown): unknown {
   if (typeof raw !== "string") return raw;
@@ -884,6 +963,18 @@ export interface McpServerInfo {
   payerAddress?: string;
   /** Principal-signed mandates from config. When set, the server never self-signs mandates from `bounds`. */
   mandates?: Mandate[];
+  /**
+   * Optional operator-configured per-issue authority ceiling (`AGENT_MEDIATE_MAX_BOUNDS_FILE`, `IT6-P1-1`).
+   * In self-representing mode (no `mandates`), every self-signed `bounds` and `determinationBounds` across
+   * `file_dispute`, `join_dispute`, `confirm_issues`, and `update_mandate` must stay inside this ceiling.
+   */
+  maxBounds?: Record<string, { min: number; max: number }>;
+  /**
+   * Explicit operator opt-in (`AGENT_MEDIATE_ALLOW_UNATTENDED_WIDENING=true`, `IT6-P1-1`, default `false`) to allow
+   * unattended self-signed `update_mandate` widenings when neither `mandates`, `maxBounds`, nor MCP client elicitation
+   * is active.
+   */
+  allowUnattendedWidening?: boolean;
   /** Optional clock override in Unix ms (defaults to `baseClient.nowMs()`). */
   now?: () => number;
   /**
@@ -917,8 +1008,28 @@ const WEBHOOK_ARG_WARNING =
 export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact">, info: McpServerInfo = {}): McpServer {
   const fullClient = baseClient.withDefaultView("full");
   const client = baseClient.withDefaultView("compact");
+  const lastSeenFingerprints = new Map<string, string>();
+  const recordSeenView = (res: unknown, mode: "compact" | "full"): void => {
+    if (!isPlainRecord(res) || !isPlainRecord(res.view)) return;
+    const id = typeof res.view.disputeId === "string" ? res.view.disputeId : null;
+    if (!id) return;
+    const key = `${id}:${mode}`;
+    if (lastSeenFingerprints.size >= MAX_TRACKED_DISPUTE_VIEWS && !lastSeenFingerprints.has(key)) {
+      const oldest = lastSeenFingerprints.keys().next().value;
+      if (oldest !== undefined) lastSeenFingerprints.delete(oldest);
+    }
+    lastSeenFingerprints.set(key, disputeViewFingerprint(res.view as Parameters<typeof disputeViewFingerprint>[0]));
+  };
+  const runMarked = (fn: () => Promise<unknown>, mode: "compact" | "full" = "compact") =>
+    run(async () => {
+      const res = await fn();
+      recordSeenView(res, mode);
+      return markDisputeResponse(res);
+    });
   const nowFn = info.now ?? (() => client.nowMs());
   const mandates = info.mandates && info.mandates.length > 0 ? info.mandates : null;
+  const maxBounds = info.maxBounds ? validateMaxBoundsCeiling(info.maxBounds) : null;
+  const allowUnattendedWidening = info.allowUnattendedWidening === true;
   const pinnedWebhook = info.webhookUrl;
   const pinnedA2aCardUrl = info.a2aCardUrl;
   const pinnedNotifyEmail = info.notifyEmail;
@@ -957,6 +1068,32 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
   if (mandates) {
     validateConfiguredMandates(mandates, client.did, nowFn());
   }
+  const enforceMaxBoundsCeiling = (
+    requested: Record<string, { min: number; max: number }> | undefined,
+    label: string,
+  ): void => {
+    if (!maxBounds || !requested) return;
+    for (const [issueId, range] of Object.entries(requested)) {
+      if (FORBIDDEN_PROTO_KEYS.has(issueId) || !Object.prototype.hasOwnProperty.call(maxBounds, issueId)) {
+        throw new Error(`${label} issue "${issueId}" is not permitted by AGENT_MEDIATE_MAX_BOUNDS_FILE ceiling`);
+      }
+      const ceiling = maxBounds[issueId]!;
+      if (
+        typeof range.min !== "number" ||
+        typeof range.max !== "number" ||
+        !Number.isFinite(range.min) ||
+        !Number.isFinite(range.max) ||
+        range.min > range.max
+      ) {
+        throw new Error(`${label} for issue "${issueId}" must have finite min <= max`);
+      }
+      if (range.min < ceiling.min - 1e-9 || range.max > ceiling.max + 1e-9) {
+        throw new Error(
+          `${label} for issue "${issueId}" (${range.min}..${range.max}) exceeds operator AGENT_MEDIATE_MAX_BOUNDS_FILE ceiling (${ceiling.min}..${ceiling.max})`,
+        );
+      }
+    }
+  };
   /** The mandate for a filing or join: a configured principal-signed one, or one self-signed from bounds. */
   const mandateFor = (
     opts: {
@@ -978,6 +1115,8 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
       return { mandate: m };
     }
     if (!opts.bounds) throw new Error("bounds are required (no principal-signed mandate is configured)");
+    enforceMaxBoundsCeiling(opts.bounds, "bounds");
+    enforceMaxBoundsCeiling(opts.determinationBounds, "determinationBounds");
     return {
       bounds: opts.bounds,
       ...(opts.determinationConsent !== undefined ? { determinationConsent: opts.determinationConsent } : {}),
@@ -985,17 +1124,87 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
     };
   };
   const server = new McpServer(
-    { name: "agent-mediate", version: "0.2.1" },
+    { name: "agent-mediate", version: "0.2.2" },
     {
       instructions:
         "Agent-Mediate resolves disputes between autonomous agents. " +
         PRINCIPAL_INTAKE_WARNING +
-        " Cold-start discovery & zero-risk handshake: call discover_respondent(target) to probe a counterparty domain; for cold or unverified counterparties, either call send_mediation_invite ($0.00) and wait for accept_mediation_invite before calling file_dispute with inviteId, or call file_dispute with requireDelivery=true (verifies outbound notice delivery before settling the $2.00 fee; $0.00 charged if RESPONDENT_UNREACHABLE). Typical flow: file_dispute (claimant) or join_dispute (respondent) → submit_evidence → close_evidence → read the proposed issues with get_dispute → confirm_issues with the exact issuesHash → submit_offer each round (include weights and walkaway with your FIRST offer; answer proposalResponse when a proposal is open) → get_outcome. If mandates do not overlap, you can reject_issues with the exact issuesHash and adoptSuggestedIds (from advisory.suggestedIssues) during ISSUE_CONFIRMATION to add a trade-off issue, or call update_mandate with monotonically widened bounds (or a principal-signed mandate) during BARGAINING or DETERMINATION (e.g. when proposalWithinYourMandate is false; determinationConsent is frozen once BARGAINING starts). When inviting a cold or unregistered respondent, always keep feeMode=\"FILER_PAYS\" (default) so joining costs the invited party $0.00 and requires zero crypto wallet setup. Offers are sealed; your walkaway and weights are never shown to anyone. You may not make an offer worse for the counterparty than your previous one. Use wait_for_change to wait for the other party. " +
+        " Cold-start discovery & zero-risk handshake: call discover_respondent(target) to probe a counterparty domain; for cold or unverified counterparties, either call send_mediation_invite ($0.00) and wait for accept_mediation_invite before calling file_dispute with inviteId, or call file_dispute with requireDelivery=true (verifies outbound notice delivery before settling the $2.00 fee; $0.00 charged if RESPONDENT_UNREACHABLE). Typical flow: file_dispute (claimant) or join_dispute (respondent) → submit_evidence → close_evidence → read the proposed issues with get_dispute → confirm_issues with the exact issuesHash → submit_offer each round (include weights and walkaway with your FIRST offer; answer proposalResponse when a proposal is open) → confirm_execution → get_outcome. Practice Counterparty Bot (platform.practiceBot.did): automates ONLY the respondent side; after file_dispute do NOT stop at AWAITING_RESPONDENT — follow view.nextActions continuously through close_evidence → confirm_issues → submit_offer → confirm_execution → get_outcome until status reaches HONORED. If mandates do not overlap, you can reject_issues with the exact issuesHash and adoptSuggestedIds (from advisory.suggestedIssues) during ISSUE_CONFIRMATION to add a trade-off issue, or call update_mandate with monotonically widened bounds (or a principal-signed mandate) during BARGAINING or DETERMINATION (e.g. when proposalWithinYourMandate is false; determinationConsent is frozen once BARGAINING starts). When inviting a cold or unregistered respondent, always keep feeMode=\"FILER_PAYS\" (default) so joining costs the invited party $0.00 and requires zero crypto wallet setup. Offers are sealed; your walkaway and weights are never shown to anyone. You may not make an offer worse for the counterparty than your previous one. Use wait_for_change to wait for the other party (it returns immediately if the dispute already changed since your last tool call). " +
         UNTRUSTED_WARNING +
         " " +
         PRINCIPAL_GROUNDING_WARNING,
     },
   );
+
+  const supportsFormElicitation = (): boolean => {
+    const elic = server.server.getClientCapabilities()?.elicitation;
+    if (!elic) return false;
+    return elic.form !== undefined || elic.url === undefined;
+  };
+
+  /**
+   * Enforce operator ceiling and/or out-of-band MCP human elicitation before self-signing bounds (`IT6-P1-1`).
+   * In self-representing mode (`!mandates`):
+   * - Always enforces `AGENT_MEDIATE_MAX_BOUNDS_FILE` (`maxBounds`) when configured.
+   * - For `update_mandate` widenings, fails closed unless MCP elicitation, `maxBounds`, or explicit
+   *   `AGENT_MEDIATE_ALLOW_UNATTENDED_WIDENING=true` is active.
+   * - Whenever the MCP host advertises form elicitation capability, prompts the human directly with
+   *   verbatim bounds (and verbatim `PROPOSAL_DETAILS` when widening) outside the LLM's prose channel.
+   */
+  const confirmSelfSignedBounds = async (params: {
+    action: "file_dispute" | "join_dispute" | "confirm_issues" | "update_mandate";
+    disputeId?: string;
+    proposedBounds: Record<string, { min: number; max: number }>;
+    determinationConsent?: boolean;
+    determinationBounds?: Record<string, { min: number; max: number }>;
+    previousBounds?: Record<string, { min: number; max: number }> | null;
+    proposalDetails?: ProposalDetails | null;
+  }): Promise<void> => {
+    if (mandates) return;
+    enforceMaxBoundsCeiling(params.proposedBounds, "bounds");
+    enforceMaxBoundsCeiling(params.determinationBounds, "determinationBounds");
+    const hasElicitation = supportsFormElicitation();
+    if (params.action === "update_mandate" && !hasElicitation && !maxBounds && !allowUnattendedWidening) {
+      throw new Error(
+        "unattended self-signed update_mandate widening is disabled by default (IT6-P1-1): configure AGENT_MEDIATE_MANDATE_FILE or AGENT_MEDIATE_MAX_BOUNDS_FILE, use an MCP host supporting human elicitation, or opt in explicitly via AGENT_MEDIATE_ALLOW_UNATTENDED_WIDENING=true",
+      );
+    }
+    if (!hasElicitation) return;
+    const lines = [
+      `Confirm self-signed mandate bounds for ${params.action}${params.disputeId ? ` (${params.disputeId})` : ""}:`,
+      `Proposed bounds: ${JSON.stringify(params.proposedBounds)}`,
+    ];
+    if (params.determinationConsent !== undefined) {
+      lines.push(`Determination consent: ${String(params.determinationConsent)}`);
+    }
+    if (params.determinationBounds) {
+      lines.push(`Proposed determinationBounds: ${JSON.stringify(params.determinationBounds)}`);
+    }
+    if (params.previousBounds) {
+      lines.push(`Previous bounds: ${JSON.stringify(params.previousBounds)}`);
+    }
+    if (params.proposalDetails) {
+      lines.push(`Verbatim PROPOSAL_DETAILS: ${JSON.stringify(params.proposalDetails)}`);
+    }
+    const elicit = await server.server.elicitInput({
+      mode: "form",
+      message: lines.join("\n"),
+      requestedSchema: {
+        type: "object",
+        properties: {
+          approve: {
+            type: "boolean",
+            title: "Approve self-signed mandate bounds",
+            description: "Confirm your agent may self-sign these exact authority bounds",
+          },
+        },
+        required: ["approve"],
+      },
+    });
+    if (elicit.action !== "accept" || elicit.content?.approve !== true) {
+      throw new Error(`human principal declined or cancelled self-signed mandate confirmation for ${params.action}`);
+    }
+  };
 
   const partyContact = z
     .object({
@@ -1024,10 +1233,19 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
     })
     .describe("Contact channels to notify the counterparty (accepts plain strings or untrusted wrappers from discover_respondent / verify_dispute_clause)");
 
-  server.registerTool("whoami", { title: "Who am I", description: "Your agent did:key, payer wallet, whether pre-signed principal mandates are loaded (requiresPrincipalIntake), and platform info (including fees and practiceBot.did)", annotations: { readOnlyHint: true } }, run(async () => ({
+  server.registerTool("whoami", { title: "Who am I", description: "Your agent did:key, payer wallet, whether pre-signed principal mandates or operator max-bounds ceilings are loaded (requiresPrincipalIntake), and platform info (including fees and practiceBot.did)", annotations: { readOnlyHint: true } }, run(async () => ({
     did: client.did,
     payerAddress: info.payerAddress ?? null,
     hasConfiguredMandates: Boolean(mandates),
+    hasMaxBoundsCeiling: Boolean(maxBounds),
+    allowUnattendedWidening,
+    selfSignedWideningPolicy: mandates
+      ? "principal-mandate-only"
+      : maxBounds
+        ? "operator-max-bounds-ceiling"
+        : allowUnattendedWidening
+          ? "unattended-opt-in"
+          : "elicitation-or-refuse",
     requiresPrincipalIntake: !mandates,
     platform: await client.platform(),
   })));
@@ -1515,7 +1733,7 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
     {
       title: "File a dispute",
       description:
-        "File a dispute against another agent. Pays the filing fee if a payer is configured (pass requireDelivery=true to verify outbound respondent notice delivery BEFORE settling the fee so $0.00 is charged if unreachable, or pass an ACCEPTED inviteId from send_mediation_invite). Always keep feeMode=\"FILER_PAYS\" (default) for cold or unregistered respondents so joining costs the invited party $0.00 and zero crypto setup. When no AGENT_MEDIATE_MANDATE_FILE is configured, your agent key signs a self-issued mandate from `bounds` — NEVER fabricate or guess `bounds`, `walkaway`, `weights`, strict `limits`, or `determinationConsent`; if your human principal has not explicitly provided them, STOP and ask your principal first (or pass principalConfirmed: false to receive the exact intake checklist). Include bounds for any optional issue you would accept, or AI-suggested issues will be dropped. Rounds are short: afterwards, use wait_for_change instead of polling.",
+        "File a dispute against another agent. Pays the filing fee if a payer is configured (pass requireDelivery=true to verify outbound respondent notice delivery BEFORE settling the fee so $0.00 is charged if unreachable, or pass an ACCEPTED inviteId from send_mediation_invite). Always keep feeMode=\"FILER_PAYS\" (default) for cold or unregistered respondents so joining costs the invited party $0.00 and zero crypto setup. When no AGENT_MEDIATE_MANDATE_FILE is configured, your agent key signs a self-issued mandate from `bounds` — NEVER fabricate or guess `bounds`, `walkaway`, `weights`, strict `limits`, or `determinationConsent`; if your human principal has not explicitly provided them, STOP and ask your principal first (or pass principalConfirmed: false to receive the exact intake checklist). Include bounds for any optional issue you would accept, or AI-suggested issues will be dropped. Filing only opens the dispute: inspect the returned view.nextActions immediately (fast counterparties such as the Practice Bot may already have joined into EVIDENCE) and continue driving close_evidence -> confirm_issues -> submit_offer -> confirm_execution -> get_outcome; use wait_for_change whenever view.nextActions[0] is \"wait_for_change\".",
       inputSchema: {
         respondentId: z.string().describe("Respondent agent's did:key"),
         contractHash: z.string().describe("sha256 hex of the contract"),
@@ -1560,20 +1778,29 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
         }
         const webhook = resolveChannel("webhookUrl", "AGENT_MEDIATE_WEBHOOK_URL", pinnedWebhook, a.webhookUrl || undefined);
         const contact = a.respondentContact ? (unwrapUntrusted(a.respondentContact) as PartyContact) : undefined;
+        const resolvedMandate = mandateFor(
+          {
+            ...(a.bounds ? { bounds: a.bounds } : {}),
+            ...(a.determinationConsent !== undefined ? { determinationConsent: a.determinationConsent } : {}),
+            ...(a.determinationBounds ? { determinationBounds: a.determinationBounds } : {}),
+          },
+          { contractHash: a.contractHash, counterpartyId: a.respondentId },
+        );
+        if ("bounds" in resolvedMandate) {
+          await confirmSelfSignedBounds({
+            action: "file_dispute",
+            proposedBounds: resolvedMandate.bounds,
+            ...(resolvedMandate.determinationConsent !== undefined ? { determinationConsent: resolvedMandate.determinationConsent } : {}),
+            ...(resolvedMandate.determinationBounds ? { determinationBounds: resolvedMandate.determinationBounds } : {}),
+          });
+        }
         return client.fileDispute(
           {
             respondentId: a.respondentId,
             contractHash: a.contractHash,
             claim: { summary: a.claimSummary, requestedRemedy: a.requestedRemedy },
             proposedIssues: a.proposedIssues,
-            ...mandateFor(
-              {
-                ...(a.bounds ? { bounds: a.bounds } : {}),
-                ...(a.determinationConsent !== undefined ? { determinationConsent: a.determinationConsent } : {}),
-                ...(a.determinationBounds ? { determinationBounds: a.determinationBounds } : {}),
-              },
-              { contractHash: a.contractHash, counterpartyId: a.respondentId },
-            ),
+            ...resolvedMandate,
             ...(a.discloseGapOnFailure !== undefined ? { discloseGapOnFailure: a.discloseGapOnFailure } : {}),
             ...(a.feeMode || a.maxRounds || a.windows
               ? {
@@ -1635,7 +1862,7 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
       },
       annotations: { readOnlyHint: true },
     },
-    async (a) => runMarked(() => (a.fullView ? fullClient : client).getDispute(a.disputeId))(),
+    async (a) => runMarked(() => (a.fullView ? fullClient : client).getDispute(a.disputeId), a.fullView ? "full" : "compact")(),
   );
 
   server.registerTool(
@@ -1648,7 +1875,8 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
     "wait_for_change",
     {
       title: "Wait for change",
-      description: "Wait until the dispute's status, nextActions, round, open proposal, evidence, issue proposal, determination or execution state changes (or the timeout passes), then return your view",
+      description:
+        "Wait until the dispute's status, nextActions, round, open proposal, evidence, issue proposal, determination or execution state changes (or the timeout passes), then return your view. Returns immediately if the dispute already changed since the last view observed by this MCP session.",
       inputSchema: {
         disputeId,
         timeoutSeconds: z.number().int().min(1).max(300).optional(),
@@ -1656,59 +1884,20 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
       },
       annotations: { readOnlyHint: true },
     },
-    async (a, extra) =>
-      runMarked(async () => {
+    async (a, extra) => {
+      const mode: "compact" | "full" = a.fullView ? "full" : "compact";
+      return runMarked(async () => {
         const c = a.fullView ? fullClient : client;
-        const fingerprint = (v: {
-          status: string;
-          nextActions?: string[];
-          nextDeadline?: number | null;
-          evidence?: unknown[];
-          bargaining?: { round: number; openProposal: unknown; yourCurrentSubmission: unknown } | null;
-          issueNegotiation?: {
-            proposalCount?: number;
-            proposedHash: string | null;
-            youConfirmed?: boolean;
-            counterpartConfirmed?: boolean;
-          };
-          determination?: { yourFinalOffer: unknown } | null;
-          outcome?: unknown;
-          execution?: {
-            proofs?: unknown;
-            confirmed?: unknown;
-            contested?: unknown;
-            improvement?: { status: string } | null;
-          } | null;
-        }) =>
-          JSON.stringify([
-            v.status,
-            v.nextActions ?? null,
-            v.nextDeadline ?? null,
-            v.evidence?.length ?? null,
-            v.bargaining?.round ?? null,
-            v.bargaining?.openProposal ?? null,
-            v.bargaining?.yourCurrentSubmission === null,
-            v.issueNegotiation?.proposalCount ?? null,
-            v.issueNegotiation?.proposedHash ?? null,
-            v.issueNegotiation?.youConfirmed ?? null,
-            v.issueNegotiation?.counterpartConfirmed ?? null,
-            v.determination?.yourFinalOffer === null,
-            v.outcome ?? null,
-            v.execution?.proofs ?? null,
-            v.execution?.confirmed ?? null,
-            v.execution?.contested ?? null,
-            v.execution?.improvement?.status ?? null,
-          ]);
-        let start: string | undefined;
+        let baseline: string | undefined = lastSeenFingerprints.get(`${a.disputeId}:${mode}`);
         return c.waitFor(
           a.disputeId,
           (v) => {
-            const fp = fingerprint(v);
-            if (start === undefined) {
-              start = fp;
+            const fp = disputeViewFingerprint(v);
+            if (baseline === undefined) {
+              baseline = fp;
               return false;
             }
-            return fp !== start;
+            return fp !== baseline;
           },
           {
             timeoutMs: (a.timeoutSeconds ?? 60) * 1000,
@@ -1716,7 +1905,8 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
             ...(extra?.signal ? { signal: extra.signal } : {}),
           },
         );
-      })(),
+      }, mode)();
+    },
   );
 
   server.registerTool(
@@ -1742,17 +1932,27 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
       return runMarked(async () => {
         const webhook = resolveChannel("webhookUrl", "AGENT_MEDIATE_WEBHOOK_URL", pinnedWebhook, a.webhookUrl || undefined);
         const view = mandates ? (await client.getDispute(a.disputeId)).view : null;
+        const resolvedMandate = mandateFor(
+          {
+            ...(a.bounds ? { bounds: a.bounds } : {}),
+            ...(a.determinationConsent !== undefined ? { determinationConsent: a.determinationConsent } : {}),
+            ...(a.determinationBounds ? { determinationBounds: a.determinationBounds } : {}),
+          },
+          { contractHash: view?.contractHash ?? "", counterpartyId: view?.counterpartId ?? "" },
+        );
+        if ("bounds" in resolvedMandate) {
+          await confirmSelfSignedBounds({
+            action: "join_dispute",
+            disputeId: a.disputeId,
+            proposedBounds: resolvedMandate.bounds,
+            ...(resolvedMandate.determinationConsent !== undefined ? { determinationConsent: resolvedMandate.determinationConsent } : {}),
+            ...(resolvedMandate.determinationBounds ? { determinationBounds: resolvedMandate.determinationBounds } : {}),
+          });
+        }
         return client.join(
           a.disputeId,
           {
-            ...mandateFor(
-              {
-                ...(a.bounds ? { bounds: a.bounds } : {}),
-                ...(a.determinationConsent !== undefined ? { determinationConsent: a.determinationConsent } : {}),
-                ...(a.determinationBounds ? { determinationBounds: a.determinationBounds } : {}),
-              },
-              { contractHash: view?.contractHash ?? "", counterpartyId: view?.counterpartId ?? "" },
-            ),
+            ...resolvedMandate,
             ...(a.discloseGapOnFailure !== undefined ? { discloseGapOnFailure: a.discloseGapOnFailure } : {}),
             ...(a.windows ? { windows: a.windows } : {}),
             ...(webhook ? { webhookUrl: webhook } : {}),
@@ -1835,6 +2035,15 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
         }
         if (a.mandate) {
           return client.confirmIssues(a.disputeId, a.issuesHash, { mandate: validateUpgradedMandate(a.mandate) }, a.idempotencyKey);
+        }
+        if (a.bounds) {
+          await confirmSelfSignedBounds({
+            action: "confirm_issues",
+            disputeId: a.disputeId,
+            proposedBounds: a.bounds,
+            ...(a.determinationConsent !== undefined ? { determinationConsent: a.determinationConsent } : {}),
+            ...(a.determinationBounds ? { determinationBounds: a.determinationBounds } : {}),
+          });
         }
         return client.confirmIssues(
           a.disputeId,
@@ -1919,6 +2128,27 @@ export function createMcpServer(baseClient: AgentMediateClient<"full" | "compact
               : "pass monotonically widened `bounds` (or a principal-signed `mandate`)",
           );
         }
+        let previousBounds: Record<string, { min: number; max: number }> | null = null;
+        let proposalDetails: ProposalDetails | null = null;
+        if (!mandates && supportsFormElicitation()) {
+          try {
+            const current = await client.getDispute(a.disputeId);
+            const marked = markDisputeResponse(current) as { view?: { yourMandate?: { bounds?: Record<string, { min: number; max: number }> } }; PROPOSAL_DETAILS?: ProposalDetails };
+            previousBounds = marked.view?.yourMandate?.bounds ?? null;
+            proposalDetails = marked.PROPOSAL_DETAILS ?? null;
+          } catch {
+            // Proceed to elicitation with the proposed bounds even if pre-fetch fails.
+          }
+        }
+        await confirmSelfSignedBounds({
+          action: "update_mandate",
+          disputeId: a.disputeId,
+          proposedBounds: a.bounds,
+          ...(a.determinationConsent !== undefined ? { determinationConsent: a.determinationConsent } : {}),
+          ...(a.determinationBounds ? { determinationBounds: a.determinationBounds } : {}),
+          previousBounds,
+          proposalDetails,
+        });
         return client.updateMandate(
           a.disputeId,
           {

@@ -74,12 +74,22 @@ export interface DiscoverRespondentOptions {
   now?: () => number;
 }
 
+export interface DiscoveredStanding {
+  listed: boolean;
+  /** Graded corroboration strength (`IT1-P1-1`): `"none"` if unlisted, `"basic"` if listed via domainless counterparties, `"domain-corroborated"` if backed by >= 1 verified-domain counterparty. */
+  strength: "none" | "basic" | "domain-corroborated";
+  qualifiedHonoredCount: number;
+  distinctCounterparties: number;
+  verifiedDomainCounterparties: number;
+}
+
 export interface DiscoveredRespondent {
   domain: string;
   origin: string;
   respondentId: string | null;
   respondentContact: PartyContact;
   verifiedStanding: boolean;
+  standing: DiscoveredStanding;
   hasVerifiedNoticeChannel: boolean;
   recommendedAction: "file_dispute" | "send_invite";
   sources: DiscoverySource[];
@@ -668,6 +678,13 @@ export async function discoverRespondent(
 
   let respondentId: string | null = null;
   let verifiedStanding = false;
+  let standing: DiscoveredStanding = {
+    listed: false,
+    strength: "none",
+    qualifiedHonoredCount: 0,
+    distinctCounterparties: 0,
+    verifiedDomainCounterparties: 0,
+  };
   let hasVerifiedNoticeChannel = false;
   const contact: PartyContact = {};
   if (initialDidWeb) contact.didWeb = initialDidWeb;
@@ -752,6 +769,28 @@ export async function discoverRespondent(
               if (firstDid) {
                 respondentId = firstDid;
                 verifiedStanding = true;
+                const qualifiedHonoredCount =
+                  typeof doc.qualifiedHonoredCount === "number" && Number.isFinite(doc.qualifiedHonoredCount)
+                    ? doc.qualifiedHonoredCount
+                    : 0;
+                const distinctCounterparties =
+                  typeof doc.distinctCounterparties === "number" && Number.isFinite(doc.distinctCounterparties)
+                    ? doc.distinctCounterparties
+                    : 0;
+                const verifiedDomainCounterparties =
+                  typeof doc.verifiedDomainCounterparties === "number" && Number.isFinite(doc.verifiedDomainCounterparties)
+                    ? doc.verifiedDomainCounterparties
+                    : 0;
+                standing = {
+                  listed: true,
+                  strength:
+                    doc.standingStrength === "domain-corroborated" || verifiedDomainCounterparties >= 1
+                      ? "domain-corroborated"
+                      : "basic",
+                  qualifiedHonoredCount,
+                  distinctCounterparties,
+                  verifiedDomainCounterparties,
+                };
                 if (typeof doc.didWeb === "string" && doc.didWeb.startsWith("did:web:")) {
                   contact.didWeb = doc.didWeb;
                 }
@@ -983,6 +1022,7 @@ export async function discoverRespondent(
     respondentId,
     respondentContact: contact,
     verifiedStanding,
+    standing,
     hasVerifiedNoticeChannel,
     recommendedAction,
     sources,

@@ -1,6 +1,6 @@
 {
   "name": "@agent-mediate/sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "license": "Apache-2.0",
   "type": "module",
   "description": "TypeScript SDK for Agent-Mediate: RFC 9421 request signing, principal-signed mandates, pre-dispute clauses, x402 USDC payment on Base, audit chain verification and signed outcomes.",
@@ -48,8 +48,8 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@agent-mediate/core": "^0.2.1",
-    "@agent-mediate/protocol": "^0.2.1",
+    "@agent-mediate/core": "^0.2.2",
+    "@agent-mediate/protocol": "^0.2.2",
     "viem": "^2.57.6"
   }
 }

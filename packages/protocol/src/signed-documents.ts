@@ -37,6 +37,8 @@ export interface HonoursAttestationDocument {
   verifiedDomainCounterparties: number;
   curedLateCount: number;
   fulfilmentRate: 1;
+  /** Graded corroboration strength (`IT1-P1-1`): `"domain-corroborated"` when `verifiedDomainCounterparties >= 1`, else `"basic"`. */
+  standingStrength?: "basic" | "domain-corroborated";
   lastHonoredAt: number;
   issuedAt: number;
 }

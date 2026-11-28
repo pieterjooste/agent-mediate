@@ -6,6 +6,10 @@
  *   AGENT_MEDIATE_AGENT_KEY_FILE  PKCS#8 PEM file with your Ed25519 agent key; created (mode 600) if missing
  *   AGENT_MEDIATE_MANDATE_FILE    optional JSON file with a principal-signed mandate (or an array of them).
  *                                 When set, the server never self-signs mandates from `bounds` (security review H2)
+ *   AGENT_MEDIATE_MAX_BOUNDS_FILE optional JSON file mapping issue IDs to `{ min, max }` operator hard ceilings in
+ *                                 self-representing mode (IT6-P1-1)
+ *   AGENT_MEDIATE_ALLOW_UNATTENDED_WIDENING set "true" to opt in to unattended self-signed `update_mandate` widenings
+ *                                 when no mandate file, max-bounds ceiling, or host elicitation is active (default false)
  *   AGENT_MEDIATE_PAYER_KEY       optional EVM private key (0x…) to pay fees automatically
  *   AGENT_MEDIATE_MAX_FEE_USDC    spending cap per payment, default 5.00
  *   AGENT_MEDIATE_BUDGET_USDC     spending cap across all payments of this process, default 10.00
@@ -38,17 +42,17 @@ import {
   USDC,
   type Mandate,
 } from "@agent-mediate/sdk";
-import { createMcpServer, validateConfiguredMandates } from "./index.ts";
+import { createMcpServer, validateConfiguredMandates, validateMaxBoundsCeiling } from "./index.ts";
 
 const cliArgs = process.argv.slice(2);
 if (cliArgs.includes("--version") || cliArgs.includes("-v")) {
-  console.log("0.2.1");
+  console.log("0.2.2");
   process.exit(0);
 }
 if (cliArgs.includes("--help") || cliArgs.includes("-h")) {
   console.log(
     [
-      "agent-mediate-mcp v0.2.1 — Model Context Protocol (stdio) server for Agent-Mediate",
+      "agent-mediate-mcp v0.2.2 — Model Context Protocol (stdio) server for Agent-Mediate",
       "",
       "Required environment variables:",
       "  AGENT_MEDIATE_URL                 API base URL (e.g. https://api.ai-agents-mediation.com)",
@@ -63,6 +67,8 @@ if (cliArgs.includes("--help") || cliArgs.includes("-h")) {
       "  AGENT_MEDIATE_NOTIFY_EMAIL        Operator-pinned notification email address",
       "  AGENT_MEDIATE_ALLOW_DYNAMIC_WEBHOOKS Set 'true' to opt in to model-supplied notification URLs/emails (default false)",
       "  AGENT_MEDIATE_MANDATE_FILE        Path to principal-signed Mandate JSON (disables bounds self-signing)",
+      "  AGENT_MEDIATE_MAX_BOUNDS_FILE     Path to JSON per-issue {min,max} ceiling for self-representing mode",
+      "  AGENT_MEDIATE_ALLOW_UNATTENDED_WIDENING Set 'true' to allow unattended self-signed update_mandate widenings (default false)",
       "  AGENT_MEDIATE_PAYER_KEY           0x-prefixed EVM private key for automatic x402 USDC payment",
       "  AGENT_MEDIATE_NETWORK             eip155:84532 (Base Sepolia, default) or eip155:8453 (Base mainnet)",
       "  AGENT_MEDIATE_PAY_TO              Pinned 0x fee recipient address (required on Base mainnet)",
@@ -181,6 +187,26 @@ if (mandateFile !== undefined) {
   }
 }
 
+let maxBounds: Record<string, { min: number; max: number }> | undefined;
+const rawMaxBoundsFile = readEnv("AGENT_MEDIATE_MAX_BOUNDS_FILE");
+const maxBoundsFile = rawMaxBoundsFile !== undefined ? expandHome(rawMaxBoundsFile) : undefined;
+if (maxBoundsFile !== undefined) {
+  try {
+    if (lstatSync(maxBoundsFile).isSymbolicLink()) {
+      fatal(`AGENT_MEDIATE_MAX_BOUNDS_FILE (${maxBoundsFile}) must not be a symbolic link`);
+    }
+    const parsed = JSON.parse(readFileSync(maxBoundsFile, "utf8")) as unknown;
+    maxBounds = validateMaxBoundsCeiling(parsed);
+  } catch (e) {
+    fatal(`invalid AGENT_MEDIATE_MAX_BOUNDS_FILE (${maxBoundsFile}): ${(e as Error).message}`);
+  }
+}
+const allowWideningRaw = readEnv("AGENT_MEDIATE_ALLOW_UNATTENDED_WIDENING");
+if (allowWideningRaw !== undefined && allowWideningRaw !== "true" && allowWideningRaw !== "false") {
+  fatal("AGENT_MEDIATE_ALLOW_UNATTENDED_WIDENING must be 'true' or 'false' when set");
+}
+const allowUnattendedWidening = allowWideningRaw === "true";
+
 const normBaseUrl = (() => {
   try {
     return normalizeBaseUrl(baseUrl);
@@ -252,6 +278,8 @@ const client = new AgentMediateClient({
 const server = createMcpServer(client, {
   ...(payer ? { payerAddress: payer.address } : {}),
   ...(mandates ? { mandates } : {}),
+  ...(maxBounds ? { maxBounds } : {}),
+  ...(allowWideningRaw !== undefined ? { allowUnattendedWidening } : {}),
   ...(pinnedWebhookUrl ? { webhookUrl: pinnedWebhookUrl } : {}),
   ...(pinnedA2aCardUrl ? { a2aCardUrl: pinnedA2aCardUrl } : {}),
   ...(pinnedNotifyEmail ? { notifyEmail: pinnedNotifyEmail } : {}),
@@ -262,5 +290,5 @@ const server = createMcpServer(client, {
 await server.connect(new StdioServerTransport());
 const usdc = (a: bigint) => (Number(a) / 1e6).toFixed(2);
 console.error(
-  `agent-mediate-mcp: ready as ${agentKey.did}${payer ? `, paying from ${payer.address} on ${network} (cap ${usdc(maxFee)} USDC per payment, ${usdc(budget)} USDC in total)` : ", no payer configured"}${mandates ? `, ${mandates.length} principal-signed mandate(s)` : ""}`,
+  `agent-mediate-mcp: ready as ${agentKey.did}${payer ? `, paying from ${payer.address} on ${network} (cap ${usdc(maxFee)} USDC per payment, ${usdc(budget)} USDC in total)` : ", no payer configured"}${mandates ? `, ${mandates.length} principal-signed mandate(s)` : maxBounds ? `, operator max-bounds ceiling (${Object.keys(maxBounds).length} issue(s))` : ""}`,
 );
