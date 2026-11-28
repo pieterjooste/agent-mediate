@@ -17,7 +17,7 @@
     "check": "npm run typecheck && npm run test:py && node --test --test-timeout=60000 \"packages/*/test/*.test.ts\""
   },
   "devDependencies": {
-    "@types/node": "^24.19.2",
+    "@types/node": "^26.6.10",
     "typescript": "^7.0.2"
   }
 }
